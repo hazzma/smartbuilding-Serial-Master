@@ -1,0 +1,170 @@
+#include "time_manager.h"
+#include "data.h"
+#include <Dns.h>
+#include <sys/time.h>
+
+static EthernetUDP udp;
+static const char* ntpServer = "pool.ntp.org";
+static const int NTP_PACKET_SIZE = 48;
+static byte packetBuffer[NTP_PACKET_SIZE];
+
+enum class LanNtpState : uint8_t {
+    IDLE,
+    WAIT_RESPONSE
+};
+
+static LanNtpState lan_ntp_state = LanNtpState::IDLE;
+static IPAddress lan_ntp_ip;
+static uint32_t lan_ntp_sent_ms = 0;
+static uint32_t last_lan_sync_attempt_ms = 0;
+static uint32_t last_success_ms = 0;
+static uint8_t lan_ntp_fail_count = 0;
+
+static const uint32_t LAN_NTP_RESPONSE_TIMEOUT_MS = 1500;
+static const uint32_t LAN_NTP_RETRY_MS = 15000;
+static const uint32_t NTP_RESYNC_MS = 600000;
+
+static void time_set_status(const char* status, const char* source, bool syncing, bool synced) {
+    data_lock(g_state);
+    g_state.net.time_syncing = syncing;
+    g_state.net.time_synced = synced;
+    strncpy(g_state.net.time_status, status, sizeof(g_state.net.time_status) - 1);
+    strncpy(g_state.net.time_source, source, sizeof(g_state.net.time_source) - 1);
+    g_state.net.time_status[sizeof(g_state.net.time_status) - 1] = '\0';
+    g_state.net.time_source[sizeof(g_state.net.time_source) - 1] = '\0';
+    g_state.ui_needs_update = true;
+    data_unlock(g_state);
+}
+
+static bool time_update_display_string(const char* source) {
+    struct tm timeinfo;
+    if (!getLocalTime(&timeinfo, 5)) return false;
+
+    data_lock(g_state);
+    strftime(g_state.net.time_str, sizeof(g_state.net.time_str), "%H:%M", &timeinfo);
+    g_state.net.time_synced = true;
+    g_state.net.time_syncing = false;
+    strncpy(g_state.net.time_source, source, sizeof(g_state.net.time_source) - 1);
+    g_state.net.time_source[sizeof(g_state.net.time_source) - 1] = '\0';
+    strncpy(g_state.net.time_status, "Time synced", sizeof(g_state.net.time_status) - 1);
+    g_state.net.time_status[sizeof(g_state.net.time_status) - 1] = '\0';
+    data_unlock(g_state);
+    return true;
+}
+
+void time_manager_init() {
+    configTime(7 * 3600, 0, ntpServer);
+    time_set_status("Waiting for NTP", "-", false, false);
+}
+
+static void sendNTPpacket(const IPAddress& address) {
+    memset(packetBuffer, 0, NTP_PACKET_SIZE);
+    packetBuffer[0] = 0b11100011;
+    packetBuffer[1] = 0;
+    packetBuffer[2] = 6;
+    packetBuffer[3] = 0xEC;
+    packetBuffer[12] = 49;
+    packetBuffer[13] = 0x4E;
+    packetBuffer[14] = 49;
+    packetBuffer[15] = 52;
+    udp.beginPacket(address, 123);
+    udp.write(packetBuffer, NTP_PACKET_SIZE);
+    udp.endPacket();
+}
+
+static bool lan_ntp_resolve(IPAddress& ntp_ip) {
+    DNSClient dns;
+    dns.begin(Ethernet.dnsServerIP());
+    if (dns.getHostByName(ntpServer, ntp_ip) == 1) return true;
+
+    dns.begin(IPAddress(8, 8, 8, 8));
+    if (dns.getHostByName(ntpServer, ntp_ip) == 1) return true;
+
+    ntp_ip = IPAddress(129, 6, 15, 28); // time.nist.gov fallback
+    return true;
+}
+
+static void lan_ntp_start() {
+    if (Ethernet.linkStatus() != LinkON) return;
+
+    last_lan_sync_attempt_ms = millis();
+    time_set_status("LAN NTP resolving", "LAN", true, false);
+
+    if (!lan_ntp_resolve(lan_ntp_ip)) {
+        lan_ntp_fail_count++;
+        time_set_status("LAN NTP DNS failed", "LAN", false, false);
+        Serial.println("[TIME] LAN NTP DNS failed");
+        return;
+    }
+
+    udp.stop();
+    udp.begin(8888);
+    sendNTPpacket(lan_ntp_ip);
+    lan_ntp_sent_ms = millis();
+    lan_ntp_state = LanNtpState::WAIT_RESPONSE;
+    time_set_status("LAN NTP waiting", "LAN", true, false);
+    Serial.printf("[TIME] LAN NTP request sent to %u.%u.%u.%u\n",
+                  lan_ntp_ip[0], lan_ntp_ip[1], lan_ntp_ip[2], lan_ntp_ip[3]);
+}
+
+static void lan_ntp_poll() {
+    if (lan_ntp_state != LanNtpState::WAIT_RESPONSE) return;
+
+    int packet_size = udp.parsePacket();
+    if (packet_size >= NTP_PACKET_SIZE) {
+        udp.read(packetBuffer, NTP_PACKET_SIZE);
+        unsigned long highWord = word(packetBuffer[40], packetBuffer[41]);
+        unsigned long lowWord = word(packetBuffer[42], packetBuffer[43]);
+        unsigned long secsSince1900 = (highWord << 16) | lowWord;
+        const unsigned long seventyYears = 2208988800UL;
+        unsigned long epoch = secsSince1900 - seventyYears;
+        time_t now = epoch + (7 * 3600);
+        struct timeval tv = { .tv_sec = now, .tv_usec = 0 };
+        settimeofday(&tv, NULL);
+
+        udp.stop();
+        lan_ntp_state = LanNtpState::IDLE;
+        lan_ntp_fail_count = 0;
+        last_success_ms = millis();
+        time_update_display_string("LAN");
+        Serial.println("[TIME] LAN NTP Sync Success");
+        return;
+    }
+
+    if (millis() - lan_ntp_sent_ms > LAN_NTP_RESPONSE_TIMEOUT_MS) {
+        udp.stop();
+        lan_ntp_state = LanNtpState::IDLE;
+        lan_ntp_fail_count++;
+        time_set_status("LAN NTP timeout", "LAN", false, false);
+        Serial.println("[TIME] LAN NTP timeout");
+    }
+}
+
+void time_manager_update() {
+    lan_ntp_poll();
+
+    bool wifi_connected = WiFi.status() == WL_CONNECTED;
+    bool lan_connected = Ethernet.linkStatus() == LinkON;
+
+    if (wifi_connected && time_update_display_string("WiFi")) {
+        last_success_ms = millis();
+        return;
+    }
+
+    if (!lan_connected) {
+        return;
+    }
+
+    uint32_t now = millis();
+    bool never_synced = last_success_ms == 0;
+    bool due_retry = now - last_lan_sync_attempt_ms > LAN_NTP_RETRY_MS;
+    bool due_resync = now - last_success_ms > NTP_RESYNC_MS;
+
+    if (lan_ntp_state == LanNtpState::IDLE && (never_synced || due_resync || due_retry)) {
+        lan_ntp_start();
+    }
+
+    if (!wifi_connected) {
+        time_update_display_string("LAN");
+    }
+}

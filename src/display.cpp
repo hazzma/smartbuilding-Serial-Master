@@ -1,0 +1,22 @@
+#include "display.h"
+
+LGFX tft;
+SemaphoreHandle_t bus_mutex = NULL;
+
+void display_init() {
+    bus_mutex = xSemaphoreCreateMutex();
+
+    tft.init();
+    tft.setRotation(3);       // Landscape 480x320, rotated 180 deg for inverted mounting
+    tft.invertDisplay(false);
+    tft.fillScreen(COLOR_BG_MAIN);
+    tft.setBrightness(200);   // ~78% brightness on boot
+
+    Serial.println("[DISP] LovyanGFX ILI9488 initialized (480x320 SPI)");
+}
+
+void display_brightness(uint8_t pct) {
+    // pct: 0-100
+    uint8_t val = (uint8_t)((float)pct / 100.0f * 255.0f);
+    tft.setBrightness(val);
+}

@@ -1,0 +1,230 @@
+#ifndef DATA_H
+#define DATA_H
+
+#include <Arduino.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+
+#define WIFI_SCAN_MAX_RESULTS 16
+#define RS485_MAX_SLAVES 8
+#define DASHBOARD_TEMP_SLOTS 4
+#define DASHBOARD_LOGICAL_SLOT_COUNT 9
+#define RS485_DUMMY_UI_UID 0xD00D0001UL
+
+enum CapabilityBit : uint16_t {
+    CAP_TEMP           = (1 << 0),
+    CAP_CO2            = (1 << 1),
+    CAP_HUMAN_PRESENCE = (1 << 2),
+    CAP_AC_IR          = (1 << 3),
+    CAP_PROJECTOR_IR   = (1 << 4),
+    CAP_LIGHT_RELAY    = (1 << 5),
+    CAP_LUX            = (1 << 6),
+    CAP_LCD_CTRL       = (1 << 7)
+};
+
+enum DashboardLogicalId : uint8_t {
+    LOGICAL_TEMP_SLOT_1 = 0,
+    LOGICAL_TEMP_SLOT_2,
+    LOGICAL_TEMP_SLOT_3,
+    LOGICAL_TEMP_SLOT_4,
+    LOGICAL_CO2_MAIN,
+    LOGICAL_LUX_MAIN,
+    LOGICAL_HUMAN_PRESENCE_MAIN,
+    LOGICAL_AC_CONTROL,
+    LOGICAL_PROJECTOR_CONTROL
+};
+
+struct LogicalMapping {
+    uint8_t  logical_id;
+    uint8_t  capability_type;
+    uint32_t slave_uid;
+    uint8_t  slave_addr;
+    uint8_t  channel;
+    bool     assigned;
+    bool     manual_override;
+};
+
+struct DashboardModel {
+    float temp[DASHBOARD_TEMP_SLOTS];
+    bool  temp_valid[DASHBOARD_TEMP_SLOTS];
+    int   co2;
+    bool  co2_valid;
+    float lux;
+    bool  lux_valid;
+    bool  human_presence;
+    bool  human_presence_valid;
+    bool  ac_available;
+    bool  projector_available;
+};
+
+struct WiFiScanResult {
+    char    ssid[33];
+    int32_t rssi;
+    uint8_t encryption;
+    uint8_t channel;
+};
+
+struct RS485SlaveState {
+    uint8_t  address;
+    uint64_t mac;
+    uint32_t uid;
+    char     name[24];
+    uint8_t  role;
+    uint16_t capability;
+    uint16_t enabled_mask;
+    uint16_t protocol_version;
+    uint16_t device_class;
+    uint16_t fw_version;
+    uint8_t  temp_count;
+    uint8_t  temp_available_mask;
+    uint8_t  temp_enabled_mask;
+    uint8_t  co2_count;
+    uint8_t  presence_count;
+    uint8_t  relay_count;
+    uint8_t  ir_count;
+    uint8_t  lux_count;
+    uint8_t  lcd_count;
+    uint16_t relay_state[2];
+    float    temp[DASHBOARD_TEMP_SLOTS];
+    bool     temp_valid[DASHBOARD_TEMP_SLOTS];
+    int      co2;
+    bool     co2_valid;
+    float    lux;
+    bool     lux_valid;
+    bool     human_presence;
+    bool     human_presence_valid;
+    bool     identity_synced;
+    bool     capability_synced;
+    uint32_t last_identity_ms;
+    uint32_t last_capability_ms;
+    uint32_t last_seen;
+    bool     online;
+    bool     degraded;
+    uint16_t error_count;
+    uint16_t rx_success;
+    uint16_t crc_errors;
+    uint16_t timeout_errors;
+    uint16_t seq_errors;
+    uint16_t len_errors;
+    uint16_t nack_count;
+    uint8_t  consecutive_fail;
+};
+
+struct RS485State {
+    bool initialized;
+    bool bus_ok;
+    bool pairing_requested;
+    bool pairing_active;
+    bool pairing_candidate_ready;
+    bool pairing_assign_requested;
+    bool poll_enabled;
+    uint8_t pairing_assign_address;
+    uint32_t pairing_started_ms;
+    uint32_t pairing_timeout_ms;
+    uint16_t pairing_timeouts;
+    uint8_t slave_count;
+    uint32_t packets_tx;
+    uint32_t packets_rx;
+    uint32_t crc_errors;
+    uint32_t timeout_errors;
+    bool test_requested;
+    bool test_busy;
+    bool test_write;
+    bool test_ok;
+    uint8_t test_address;
+    uint8_t test_cmd;
+    uint8_t test_result;
+    uint8_t test_seq;
+    uint8_t test_attempts;
+    uint32_t test_started_ms;
+    uint32_t test_done_ms;
+    char test_status[64];
+    char status[64];
+    RS485SlaveState pairing_candidate;
+    RS485SlaveState slaves[RS485_MAX_SLAVES];
+    LogicalMapping mappings[DASHBOARD_LOGICAL_SLOT_COUNT];
+    DashboardModel dashboard;
+};
+
+struct SensorData {
+    float    temp[4];
+    float    temp_target;
+    float    lux;
+    int      co2;
+    bool     ac_on;
+    bool     projector_on;
+    bool     light_on;
+    bool     human_presence;
+    bool     sensor_error[4];
+    uint8_t  slave_count;
+    bool     slave_online[2];
+};
+
+struct NetworkState {
+    bool  wifi_connected;
+    bool  lan_connected;
+    bool  lan_initialized;
+    bool  lan_dhcp_ok;
+    bool  lan_static_fallback;
+    bool  lan_checking;
+    bool  firebase_ok;
+    bool  mqtt_ok;
+    int   net_priority;           // 0=WiFi, 1=LAN
+    bool  lan_use_dhcp;
+    char  lan_ip[16];
+    char  lan_current_gateway[16];
+    char  lan_current_subnet[16];
+    char  lan_current_dns[16];
+    char  lan_link_status[24];
+    char  connected_wifi_ssid[32];
+    bool  time_synced;
+    bool  time_syncing;
+    char  time_source[8];
+    char  time_status[40];
+    char  lan_static_ip[16];
+    char  lan_gateway[16];
+    char  lan_subnet[16];
+    char  lan_dns[16];
+    char  time_str[16];
+    char  room_name[32];
+    char  slave_name[2][32];
+    char  conn_status[32];
+    char  lan_status_detail[64];
+    char  wifi_status_detail[64];
+    bool  wifi_scan_requested;
+    bool  wifi_scan_active;
+    bool  wifi_scan_start_pending;
+    bool  wifi_scan_radio_warming;
+    bool  wifi_scan_done;
+    bool  wifi_scan_error;
+    bool  wifi_scan_has_results;
+    uint8_t wifi_scan_count;
+    uint32_t wifi_scan_requested_ts;
+    uint32_t wifi_scan_started_ts;
+    uint32_t wifi_scan_finished_ts;
+    uint8_t wifi_scan_start_attempts;
+    char  wifi_scan_status[64];
+    WiFiScanResult wifi_scan_results[WIFI_SCAN_MAX_RESULTS];
+};
+
+struct BuildingState {
+    SensorData          sensor;
+    NetworkState        net;
+    int                 dashboard_page;
+    bool                use_dummy;
+    bool                ui_needs_update;
+    uint32_t            last_data_ts;
+    SemaphoreHandle_t   mutex;
+    RS485State          rs485;
+};
+
+extern BuildingState g_state;
+
+void data_init(BuildingState& state);
+void data_load_dummy(BuildingState& state);
+void data_load_rs485_config(BuildingState& state);
+void data_save_rs485_config(BuildingState& state);
+void data_lock(BuildingState& state);
+void data_unlock(BuildingState& state);
+
+#endif
