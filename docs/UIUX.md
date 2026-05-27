@@ -751,17 +751,17 @@ SAVE behavior:
 
 ```text
 Tap SAVE:
-    write current assignment to selected slave registers 0x0010..0x0017
-    then optionally write SAVE_CONFIG 0x00F0 = 0xA55A
+    write current capability counts to selected slave registers 0x0011..0x0016
+    then optionally write SAVE_CONFIG 0x00F1 = 0xA55A
 ```
 
-Temperature assignment bit order:
+Temperature count mapping:
 
 ```text
-Temperature 1 -> 0x0008
-Temperature 2 -> 0x0004
-Temperature 3 -> 0x0002
-Temperature 4 -> 0x0001
+TEMP_SENSOR_COUNT >= 1 -> Temperature 1 / 0x0100
+TEMP_SENSOR_COUNT >= 2 -> Temperature 2 / 0x0101
+TEMP_SENSOR_COUNT >= 3 -> Temperature 3 / 0x0102
+TEMP_SENSOR_COUNT >= 4 -> Temperature 4 / 0x0103
 ```
 
 ---

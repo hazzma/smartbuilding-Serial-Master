@@ -156,7 +156,7 @@ Parsing rules:
 - App SHALL not infer a sensor is valid from placeholder values such as `-100`.
 - `temperature.points_c` SHALL be treated as fixed slots: index 0 = Point 1 / Temperature 1, index 1 = Point 2 / Temperature 2, index 2 = Point 3 / Temperature 3, index 3 = Point 4 / Temperature 4. Do not compact non-null values upward in the app UI.
 - `lights.channels` SHALL be treated as the source of truth for lamp count and current state.
-- RS485 contract v2.0.0 supports Relay 1-2 per slave. The app may still show up to 4 logical lamp channels when the master maps relays from multiple slaves or future hardware into `lights.channels`.
+- Current agreed RS485 slave contract `docs/From_SLave/RS485_Modbus_Slave_Firmware_Contract_V_1_4_0.md` supports Relay 1-2 per slave at registers `0x0130..0x0131`. The app may still show up to 4 logical lamp channels when the master maps relays from multiple slaves or future hardware into `lights.channels`.
 
 ---
 

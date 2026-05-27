@@ -28,20 +28,20 @@ Dengan berpindah ke SPI, kita membebaskan banyak pin GPIO yang sebelumnya diguna
 | **TFT_SCLK** | 6 | SPI3 SCK |
 | **TFT_BL** | 5 | Backlight PWM |
 | **TFT_MISO** | 4 | SPI3 MISO (Optional for TFT) |
-| **TP_SDA** | 1 | I2C SDA (Capacitive Touch) |
-| **TP_SCL** | 2 | I2C SCL (Capacitive Touch) |
-| **TP_INT** | 3 | Touch Interrupt |
-| **TP_RST** | 4 | Touch Reset |
+| **TP_SDA** | 8 | I2C SDA (Capacitive Touch) |
+| **TP_SCL** | 9 | I2C SCL (Capacitive Touch) |
+| **TP_INT** | - | Not connected / unused |
+| **TP_RST** | 3 | Touch Reset / CTP_RST |
 
 ### 2.2 Ethernet (W5500 SPI Bus)
 | Function | Pin (GPIO) | Notes |
 | :--- | :--- | :--- |
-| **ETH_SCLK** | 36 | SPI3 (HSPI) SCK |
-| **ETH_MOSI** | 35 | SPI3 (HSPI) MOSI |
-| **ETH_MISO** | 37 | SPI3 (HSPI) MISO |
-| **ETH_CS** | 38 | Chip Select |
-| **ETH_RST** | 39 | Reset |
-| **ETH_INT** | 40 | Interrupt |
+| **ETH_SCLK** | 12 | SPI2_HOST SCK |
+| **ETH_MOSI** | 11 | SPI2_HOST MOSI |
+| **ETH_MISO** | 13 | SPI2_HOST MISO |
+| **ETH_CS** | 10 | Chip Select |
+| **ETH_RST** | 18 | Reset |
+| **ETH_INT** | - | Not connected / unused |
 
 ### 2.3 RS485 Communication (UART0 / board TXD0-RXD0)
 | Function | Pin (GPIO) | Notes |

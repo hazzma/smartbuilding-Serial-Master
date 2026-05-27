@@ -1,6 +1,6 @@
 # RS485 Agent Documentation Report
 
-> Current alignment note: this report has been updated to the active RS485 Modbus v2.0.0 master behavior. The normative architecture document is `docs/Smart_Building_RS485_Modbus_Architecture.md`; the normative slave wire contract is `docs/RS485_Modbus_Slave_Firmware_Contract_V_2.0.0.md`.
+> Current alignment note: the normative architecture document is `docs/Smart_Building_RS485_Modbus_Architecture.md`; the normative slave wire contract is `docs/From_SLave/RS485_Modbus_Slave_Firmware_Contract_V_1_4_0.md`. Older implementation notes below may describe intermediate firmware phases and should be treated as historical unless they match those normative documents.
 
 ## Reference
 
@@ -14,10 +14,10 @@ Phase 1 follows the new direction from that document:
 - Master owns the bus.
 - Slave only responds to master polling/read/write.
 - Pairing/default address is `247`.
-- Identity starts at `0x0000` and uses `NODE_ADDRESS`, `FW_VERSION`, and MAC registers.
-- Capability assignment/count registers start at `0x0010`.
-- Runtime polling reads one contiguous sensor/actuator block at `0x0100` length `15`.
-- Slave Detail checkbox state is master-owned; SAVE writes assignment registers `0x0010..0x0017`.
+- Identity follows the slave contract: `DEVICE_MAGIC` at `0x0000`, `FW_VERSION` at `0x0005`, and MAC registers at `0x0006..0x0008`.
+- Capability count registers are `0x0011..0x0016`.
+- Runtime polling follows the slave contract register groups: temperature `0x0100..0x0103`, air quality `0x0110..0x0112`, presence `0x0120..0x0121`, and relay `0x0130..0x0131`.
+- Slave Detail checkbox state is master-owned; SAVE writes capability counts to `0x0011..0x0016`, then may write `0x00F1 = 0xA55A`.
 
 ## Phase 1 - Modbus Transport Skeleton
 
@@ -35,7 +35,7 @@ Status: Implemented and build-passed, pending hardware validation.
 - Added `DFRobot_RTU` dependency as the Modbus RTU library required by the architecture document.
 - Reworked `rs485_manager.cpp` from custom binary frame transport into a Modbus RTU master backend.
 - Kept the existing public RS485 manager API stable so current UI callbacks, task creation, and state flags remain compatible.
-- Added Modbus register constants to `rs485_manager.h` for identity, assignment/count registers, contiguous sensor block, presence, and relay registers.
+- Added Modbus register constants to `rs485_manager.h` for identity, capability counts, sensor groups, presence, and relay registers.
 - Preserved `Task_RS485` on Core 0 so WiFi, LAN, MQTT, UI, and touch code do not need changes in Phase 1.
 - Preserved Serial debug commands for no-slave testing.
 - Updated master MAX3485 direction control to PCB `COM_SW` on GPIO21.
@@ -46,11 +46,11 @@ The existing UI commands are mapped to Modbus register operations:
 
 | UI / Legacy Command | Modbus Operation |
 |---|---|
-| `RS485_CMD_PING` | Read holding register `0x0000` (`NODE_ADDRESS`) |
-| `RS485_CMD_GET_INFO` | Read holding registers `0x0000..0x0004` |
-| `RS485_CMD_READ_SENSOR` | Read holding registers `0x0100..0x010E` |
-| `RS485_CMD_GET_CONFIG` | Read holding registers `0x0010..0x0017` |
-| `RS485_CMD_SET_OUTPUT` | Write holding register `0x010D` (`RELAY_1_STATE`) |
+| `RS485_CMD_PING` | Read holding register `0x0000` (`DEVICE_MAGIC`) |
+| `RS485_CMD_GET_INFO` | Read identity registers including `0x0000`, `0x0005`, and MAC `0x0006..0x0008` |
+| `RS485_CMD_READ_SENSOR` | Read runtime groups from `0x0100`, `0x0110`, `0x0120`, and relay state as needed |
+| `RS485_CMD_GET_CONFIG` | Read capability count registers `0x0011..0x0016` |
+| `RS485_CMD_SET_OUTPUT` | Write holding register `0x0130` (`RELAY_1_STATE`) |
 
 ### Serial Monitor Test Commands
 
@@ -83,10 +83,10 @@ rs485 stats
 
 Expected behavior:
 
-- `rs485 test 0x10 0x01` reads `NODE_ADDRESS`.
-- `rs485 test 0x10 0x02` reads identity registers `0x0000..0x0004`.
-- `rs485 test 0x10 0x03` reads sensor/actuator block `0x0100..0x010E`.
-- `rs485 testwrite 0x10` writes `1` to `RELAY_1_STATE` at `0x010D`.
+- `rs485 test 0x10 0x01` reads `DEVICE_MAGIC`.
+- `rs485 test 0x10 0x02` reads identity data including MAC registers.
+- `rs485 test 0x10 0x03` reads sensor groups according to enabled capability counts.
+- `rs485 testwrite 0x10` writes `1` to `RELAY_1_STATE` at `0x0130`.
 - `rs485 inject ...` forces the next transaction result so counters and UI status can be tested without slave hardware.
 
 ### Deliberately Not Implemented Yet
@@ -98,7 +98,7 @@ Expected behavior:
 ### Notes / Ambiguities From Reference
 
 - The architecture document lists `2-247` as normal slaves and also `247` as pairing/default address. Phase 1 treats `247` as reserved for pairing, so normal discovered slave addresses should avoid `247`.
-- `SAVE_CONFIG` is currently `0x00F0` with value `0xA55A`.
+- `SAVE_CONFIG` is `0x00F1` with value `0xA55A`.
 - Phase 1 assumes holding register reads (`0x03`) for all listed architecture registers. If slave firmware exposes sensor values as input registers (`0x04`), the manager should add a per-register function-code map in Phase 2.
 
 ## Phase Gate Result
@@ -436,7 +436,7 @@ rs485 stats
 
 Expected hardware behavior:
 
-- Slave capability registers are read from `0x0010..0x0017`.
+- Slave capability count registers are read from `0x0011..0x0016`.
 - Polling reads temperature, CO2, presence, and LUX according to capability.
 - Dashboard validity flags become true only for mapped, online, valid sensor data.
 
@@ -449,7 +449,7 @@ Hardware result: pending.
 Missing before Phase 2:
 
 - Confirm slave firmware register function code: holding register vs input register.
-- Confirm all slave firmware variants expose the v2.0.0 identity and assignment map.
+- Confirm all slave firmware variants expose the V_1_4_0 identity and capability count map.
 
 ## Phase 2 - Register Polling and Capability Registry
 
@@ -485,12 +485,12 @@ Status: Implemented and build-passed, pending hardware validation.
   - capability sync every 5 seconds
   - sensor polling only after identity/capability is current
 - Added capability-based sensor polling:
-  - master reads one contiguous block `0x0100..0x010E`
+  - master reads runtime register groups from the agreed slave contract
   - `CAP_TEMP` uses `0x0100..0x0103`
-  - `CAP_LUX` uses `0x0104..0x0107`
-  - `CAP_CO2` uses `0x0108`
-  - `CAP_PRESENCE` uses `0x0109..0x010C`
-  - relay state uses `0x010D..0x010E`
+  - `CAP_LUX` is master/UI reserved unless a future slave contract adds LUX runtime registers
+  - `CAP_CO2` uses `0x0110`
+  - `CAP_PRESENCE` uses `0x0120..0x0121`
+  - relay state uses `0x0130..0x0131`
 - Kept polling inside `Task_RS485` on Core 0 and kept public UI/API compatibility.
 
 ### Serial Monitor Test Commands
@@ -524,7 +524,7 @@ rs485 poll on
 Expected hardware behavior:
 
 - `rs485 sync 0x10` reads identity registers `0x0000..0x0008`.
-- `rs485 sync 0x10` reads capability registers `0x0010..0x0017`.
+- `rs485 sync 0x10` reads capability count registers `0x0011..0x0016`.
 - Polling then reads sensor registers according to the slave capability bitmask.
 
 ### Phase Gate Result
@@ -537,7 +537,7 @@ Missing before Phase 3:
 
 - Pairing candidate read at address `247`.
 - Address assignment register definition.
-- `SAVE_CONFIG` register definition.
+- `SAVE_CONFIG` register definition (`0x00F1 = 0xA55A`).
 - Dashboard mapping and control routing UI.
 
 ## Phase 3 - Pairing Candidate, Address Assignment, and UI Route
@@ -692,8 +692,8 @@ This phase follows `docs/Smart_Building_Connectivity_Dashboard_Mapping_Design_UP
   - `CAP_LCD_CTRL = 1 << 7`
 - Updated capability register block:
   - `0x0016 = LUX_SENSOR_COUNT`
-  - `0x0017 = LCD_CTRL_COUNT`
-  - master now reads capability block `0x0010..0x0017`.
+  - `0x0016 = LCD_CTRL_COUNT`
+  - master now reads capability count block `0x0011..0x0016`.
 - Added registry-ready fields to `RS485SlaveState`:
   - `mac`
   - `name`

@@ -1036,7 +1036,7 @@ firmware_version: 1.0.0
 
 Because the current development build uses the same topic for publish and subscribe, firmware SHALL ignore payloads with `type = smart_building_master_state` when they arrive through the subscribe callback.
 
-Invalid or unavailable sensor values SHALL be encoded as `null`, not fake numeric placeholders. RS485 slave contract v2.0.0 supports Relay 1-2 per slave; the MQTT/UI model may still expose up to 4 logical lamp channels when the master maps relays from multiple slaves or future hardware into `controls.lights.channels`.
+Invalid or unavailable sensor values SHALL be encoded as `null`, not fake numeric placeholders. RS485 slave contract V_1_4_0 supports Relay 1-2 per slave at `0x0130..0x0131`; the MQTT/UI model may still expose up to 4 logical lamp channels when the master maps relays from multiple slaves or future hardware into `controls.lights.channels`.
 
 Publish triggers:
 - periodic publish using configured interval
@@ -1198,7 +1198,7 @@ Runtime pin config:
 
 > **Normative reference for Slave/Dashboard UX:** Detailed slave orchestration, Slave Manager layout, discovery flow, empty/default-device behavior, slave detail/configuration UI, dashboard logical mapping, manual mapping, capability enable state, and touch pagination/scroll behavior SHALL be defined in `docs/Smart_Building_Connectivity_Dashboard_Mapping_Design_UPDATED.md`.
 >
-> **Normative reference for RS485 slave wire contract:** Modbus register map, pairing behavior, recovery behavior, invalid sensor values, and slave-side implementation rules SHALL follow `docs/RS485_Modbus_Slave_Firmware_Contract_V_2.0.0.md`.
+> **Normative reference for RS485 slave wire contract:** Modbus register map, pairing behavior, recovery behavior, invalid sensor values, and slave-side implementation rules SHALL follow `docs/From_SLave/RS485_Modbus_Slave_Firmware_Contract_V_1_4_0.md`.
 >
 > This FSD section is only the system-level summary for transport, task ownership, and integration boundaries. If this section conflicts with `Smart_Building_Connectivity_Dashboard_Mapping_Design_UPDATED.md` on slave/dashboard UX or mapping behavior, the connectivity mapping design document SHALL win.
 
@@ -1302,7 +1302,7 @@ Default pairing address:
 247
 ```
 
-Per slave contract v2.0.0, all slaves SHALL boot on address `247` because slave config is RAM-only. Normal assigned addresses SHALL be `2..246`; address `1` is reserved by system convention.
+Per slave contract V_1_4_0, all slaves SHALL boot on address `247` because slave config is RAM-only. Normal assigned addresses SHALL be `2..246`; address `1` is reserved by system convention.
 
 Master SHALL persist the MAC address to assigned-address mapping locally. On slave reboot, the master SHALL be able to restore a known slave by sending the saved MAC and address to the recovery registers at address `247`.
 
@@ -1323,22 +1323,22 @@ Master SHALL persist the MAC address to assigned-address mapping locally. On sla
 
 6. Master reads identity registers
 
-7. Master reads MAC, firmware metadata, and capability assignment/count registers
+7. Master reads MAC, firmware metadata, and capability count registers
 
 8. UI shows detected device
 
 9. User assigns address/name
 
-10. Master writes capability assignment/count registers 0x0010-0x0017
+10. Master writes capability count registers `0x0011..0x0016`
 
-11. Master writes NODE_ADDRESS 0x0000 with a unique address 2..246
+11. Master writes `NODE_ADDRESS 0x00F0` with a unique address 2..246
 
 12. Slave applies address immediately and exits address 247
 
 13. Polling resumes
 ```
 
-`SAVE_CONFIG` at 0x00F0 remains an optional compatibility/config signal, but slave v2.0.0 SHALL NOT rely on local EEPROM persistence for address or capability. Master persistence is the authoritative recovery source.
+`SAVE_CONFIG` at `0x00F1` remains an optional compatibility/config signal, but slave V_1_4_0 SHALL NOT rely on local EEPROM persistence for address or capability. Master persistence is the authoritative recovery source.
 
 ### 13.5.1 Recovery / Re-pairing Flow
 
@@ -1346,8 +1346,8 @@ Master SHALL persist the MAC address to assigned-address mapping locally. On sla
 1. Slave reboots and returns to address 247
 2. Master reads identity/MAC at address 247
 3. Master looks up saved MAC -> assigned address
-4. Master writes recovery MAC registers 0x00F5-0x00F7
-5. Master writes recovery address register 0x00F8
+4. Master writes recovery MAC registers `0x00F6..0x00F8`
+5. Master writes recovery address register `0x00F9`
 6. Matching slave applies the recovered address
 7. Non-matching slaves ignore the recovery command and remain on 247
 ```
@@ -1359,25 +1359,25 @@ Master SHALL persist the MAC address to assigned-address mapping locally. On sla
 The following Modbus registers SHALL be reserved for runtime pairing/configuration:
 
 ```text
-0x0000 = NODE_ADDRESS
-0x00F0 = SAVE_CONFIG
-0x00F1 = CONFIG_VERSION
-0x00F2 = LAST_ERROR
-0x00F3 = UPTIME_LOW
-0x00F4 = UPTIME_HIGH
-0x00F5 = RECOVERY_MAC_0_1
-0x00F6 = RECOVERY_MAC_2_3
-0x00F7 = RECOVERY_MAC_4_5
-0x00F8 = RECOVERY_ADDRESS
+0x00F0 = NODE_ADDRESS
+0x00F1 = SAVE_CONFIG
+0x00F2 = CONFIG_VERSION
+0x00F3 = LAST_ERROR
+0x00F4 = UPTIME_LOW
+0x00F5 = UPTIME_HIGH
+0x00F6 = RECOVERY_MAC_0_1
+0x00F7 = RECOVERY_MAC_2_3
+0x00F8 = RECOVERY_MAC_4_5
+0x00F9 = RECOVERY_ADDRESS
 ```
 
 Required write value:
 
 ```text
-0xA55A = SAVE_CONFIG compatibility/config signal
+0xA55A = SAVE_CONFIG compatibility/config signal written to 0x00F1
 ```
 
-Slave firmware SHALL implement `NODE_ADDRESS`, capability assignment/count registers, and recovery registers. Slave firmware v2.0.0 SHALL keep address and capability in RAM only; the master SHALL own persistent MAC/address recovery data.
+Slave firmware SHALL implement `NODE_ADDRESS`, capability count registers, and recovery registers. Slave firmware V_1_4_0 SHALL keep address and capability in RAM only; the master SHALL own persistent MAC/address recovery data.
 
 ---
 
@@ -1386,7 +1386,7 @@ Slave firmware SHALL implement `NODE_ADDRESS`, capability assignment/count regis
 Slave identity SHALL NOT rely only on Modbus address.
 
 Slave SHALL expose:
-- NODE_ADDRESS
+- DEVICE_MAGIC
 - FW_VERSION
 - MAC registers
 
@@ -1399,32 +1399,138 @@ because:
 
 ## 13.8 Capability Registers
 
-Slave contract v2.0.0 uses assignment/count registers as the primary capability contract:
+Slave contract V_1_4_0 uses capability count registers as the primary capability contract:
 
 ```text
-0x0010 TEMP_SENSOR_ASSIGNMENT       4-bit mask, bit3..bit0 = Temp1..Temp4
-0x0011 LUX_SENSOR_ASSIGNMENT        4-bit mask, bit3..bit0 = Lux1..Lux4
+0x0011 TEMP_SENSOR_COUNT
 0x0012 CO2_SENSOR_COUNT
-0x0013 PRESENCE_SENSOR_ASSIGNMENT   4-bit mask, bit3..bit0 = Presence1..Presence4
-0x0014 RELAY_ASSIGNMENT             2-bit mask, bit1..bit0 = Relay1..Relay2
-0x0015 IR_PROJECTOR_ENABLE
-0x0016 IR_AC_1_ENABLE
-0x0017 IR_AC_2_ENABLE
+0x0013 PRESENCE_SENSOR_COUNT
+0x0014 RELAY_COUNT
+0x0015 IR_COUNT
+0x0016 LCD_CTRL_COUNT
 ```
 
-The master firmware MAY keep an internal bitmask for UI/state convenience, but the active Modbus wire contract SHALL be derived from the v2.0.0 assignment/count registers.
+Register `0x0010` is deprecated by the agreed slave contract and SHALL NOT be used as an active capability mask. The master firmware MAY keep an internal bitmask for UI/state convenience, but the active Modbus wire contract SHALL be derived from the V_1_4_0 count registers above.
 
-The Slave Detail checklist is master-owned. User checked/unchecked state SHALL live in master NVS and SHALL NOT be overwritten by a later capability read from the slave. Reading the slave assignment registers is diagnostic/sync data only after the master has a local assignment.
+The Slave Detail checklist is master-owned. User checked/unchecked state SHALL live in master NVS and SHALL NOT be overwritten by a later capability read from the slave. Reading the slave capability count registers is diagnostic/sync data only after the master has a local assignment.
 
-On Slave Detail SAVE, firmware SHALL write current master assignment state to `0x0010..0x0017`; if the write succeeds, firmware MAY write `0x00F0 = 0xA55A` as the compatibility SAVE_CONFIG signal.
+On Slave Detail SAVE, firmware SHALL write current master capability counts to `0x0011..0x0016`; if the write succeeds, firmware MAY write `0x00F1 = 0xA55A` as the compatibility SAVE_CONFIG signal.
 
-Temperature assignment bit order SHALL be:
+Temperature count SHALL map to fixed dashboard/runtime slots:
 
 ```text
-Temperature 1 / Point 1 -> 0x0010 bit3 / 0x0008 -> data 0x0100
-Temperature 2 / Point 2 -> 0x0010 bit2 / 0x0004 -> data 0x0101
-Temperature 3 / Point 3 -> 0x0010 bit1 / 0x0002 -> data 0x0102
-Temperature 4 / Point 4 -> 0x0010 bit0 / 0x0001 -> data 0x0103
+TEMP_SENSOR_COUNT >= 1 -> Temperature 1 / Point 1 -> data 0x0100
+TEMP_SENSOR_COUNT >= 2 -> Temperature 2 / Point 2 -> data 0x0101
+TEMP_SENSOR_COUNT >= 3 -> Temperature 3 / Point 3 -> data 0x0102
+TEMP_SENSOR_COUNT >= 4 -> Temperature 4 / Point 4 -> data 0x0103
+```
+
+---
+
+## 13.8.1 RS485 Contract Block Diagram
+
+The master SHALL treat the slave contract as four register groups: identity, capability/config, runtime data, and control.
+
+```text
+Smart Building Master S3
+  |
+  | Modbus RTU 19200 8N1, master request only
+  v
+RS485 Bus / MAX3485
+  |
+  +--> Slave at pairing/default address 247
+  |      Identity read:       0x0000..0x0008
+  |      Capability write:    0x0011..0x0016
+  |      Address assignment:  0x00F0
+  |      Save signal:         0x00F1 = 0xA55A
+  |
+  +--> Assigned slave address 2..246
+         Runtime reads:
+           Temperature        0x0100..0x0103
+           Air quality        0x0110..0x0112
+           Presence           0x0120..0x0121
+         Control writes:
+           Relay              0x0130..0x0131
+           AC                 0x0200..0x0202
+           Projector          0x0210..0x0211
+```
+
+Recovery after slave reboot SHALL use the pairing/default address `247`:
+
+```text
+1. Master reads MAC from 247 identity registers.
+2. Master looks up MAC -> saved address in master persistence.
+3. Master writes recovery MAC to 0x00F6..0x00F8.
+4. Master writes recovery address to 0x00F9.
+5. Matching slave applies the address and leaves 247.
+```
+
+---
+
+## 13.8.2 RS485 Header / Register Definitions
+
+The following constants mirror `docs/From_SLave/RS485_Modbus_Slave_Firmware_Contract_V_1_4_0.md` and SHALL be used when documenting or implementing master/slave communication.
+
+```cpp
+#define SB_MODBUS_BAUDRATE      19200
+#define SB_MODBUS_DEFAULT_ADDR  247
+#define SB_MODBUS_MIN_ADDR      2
+#define SB_MODBUS_MAX_ADDR      246
+#define SB_SAVE_CONFIG_VALUE    0xA55A
+
+#define REG_DEVICE_MAGIC        0x0000
+#define REG_PROTOCOL_VERSION    0x0001
+#define REG_FW_VERSION          0x0005
+#define REG_MAC_0_1             0x0006
+#define REG_MAC_2_3             0x0007
+#define REG_MAC_4_5             0x0008
+
+#define REG_TEMP_COUNT          0x0011
+#define REG_CO2_COUNT           0x0012
+#define REG_PRESENCE_COUNT      0x0013
+#define REG_RELAY_COUNT         0x0014
+#define REG_IR_COUNT            0x0015
+#define REG_LCD_COUNT           0x0016
+
+#define REG_NODE_ADDRESS        0x00F0
+#define REG_SAVE_CONFIG         0x00F1
+#define REG_CONFIG_VERSION      0x00F2
+#define REG_LAST_ERROR          0x00F3
+#define REG_UPTIME_LOW          0x00F4
+#define REG_UPTIME_HIGH         0x00F5
+#define REG_RECOVERY_MAC_0_1    0x00F6
+#define REG_RECOVERY_MAC_2_3    0x00F7
+#define REG_RECOVERY_MAC_4_5    0x00F8
+#define REG_RECOVERY_ADDRESS    0x00F9
+
+#define REG_TEMP_1_X10          0x0100
+#define REG_TEMP_2_X10          0x0101
+#define REG_TEMP_3_X10          0x0102
+#define REG_TEMP_4_X10          0x0103
+#define REG_CO2_PPM             0x0110
+#define REG_TVOC                0x0111
+#define REG_HUMIDITY_X10        0x0112
+#define REG_PRESENCE_STATE      0x0120
+#define REG_PRESENCE_CONF       0x0121
+#define REG_RELAY_1_STATE       0x0130
+#define REG_RELAY_2_STATE       0x0131
+
+#define REG_AC_POWER            0x0200
+#define REG_AC_SET_TEMP         0x0201
+#define REG_AC_MODE             0x0202
+#define REG_PROJECTOR_POWER     0x0210
+#define REG_PROJECTOR_INPUT     0x0211
+#define REG_LCD_POWER           0x0220
+#define REG_LCD_INPUT           0x0221
+```
+
+Sentinel values:
+
+```text
+Temperature invalid: -32768
+CO2 invalid:         0xFFFF
+Humidity invalid:    0xFFFF
+Presence confidence: 0xFFFF
 ```
 
 ---
@@ -1460,7 +1566,7 @@ PROJECTOR_CONTROL
 
 Master SHALL map slave capability into logical slot.
 
-`LUX_MAIN` is backed by the v2.0.0 LUX assignment registers when available.
+`LUX_MAIN` is a master-side logical slot. The current agreed slave contract V_1_4_0 does not define a dedicated LUX runtime register; any LUX support SHALL be treated as a future contract extension or implementation-specific slave data until the slave contract is revised.
 
 ---
 
@@ -1726,7 +1832,7 @@ All supported feature rows SHALL default to Available in each online slave detai
 Temperature N SHALL become Unavailable only on other slaves while Temperature N is checked on one slave.
 Unchecking Temperature N SHALL immediately make Temperature N Available on other slaves.
 Checked state is master-owned and persisted in master NVS.
-SAVE SHALL write the current assignment to the selected slave's 0x0010..0x0017 registers.
+SAVE SHALL write the current capability counts to the selected slave's `0x0011..0x0016` registers.
 ```
 
 Recommended configuration screen:

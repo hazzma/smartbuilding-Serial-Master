@@ -132,10 +132,12 @@ enum CapabilityBit {
     CAP_AC_IR         = 1 << 3,
     CAP_PROJECTOR_IR  = 1 << 4,
     CAP_LIGHT_RELAY   = 1 << 5,
-    CAP_LUX           = 1 << 6,
+    CAP_LUX           = 1 << 6, // master-side/future extension; not in slave contract V_1_4_0
     CAP_LCD_CTRL      = 1 << 7
 };
 ```
+
+Current agreed slave contract `docs/From_SLave/RS485_Modbus_Slave_Firmware_Contract_V_1_4_0.md` does not define a dedicated LUX runtime register. `CAP_LUX` and `LUX_MAIN` MAY remain in the master/UI model as future-extension or implementation-specific fields, but they SHALL NOT be treated as required V_1_4_0 wire registers.
 
 Slave dapat memiliki banyak capability sekaligus.
 
@@ -266,7 +268,7 @@ Dashboard tidak boleh menampilkan data lama sebagai valid.
 
 2. Isi CO2_MAIN dari slave online pertama yang memiliki CO2 aktif.
 
-3. Isi LUX_MAIN dari slave online pertama yang memiliki lux aktif.
+3. Isi LUX_MAIN only if the master has implementation-specific or future-contract LUX data. Slave contract V_1_4_0 does not require a LUX register.
 
 4. Isi HUMAN_PRESENCE_MAIN dari slave online pertama yang memiliki human presence aktif.
 
@@ -570,9 +572,9 @@ Feature checklist / assignment rules:
 2. By default, each option SHALL be selectable/Available in every online slave detail page.
 3. Checked item means the master assigned that feature/channel to that slave.
 4. Unchecked item means the feature/channel is not assigned by the master.
-5. Slave-reported assignment registers SHALL NOT be treated as the owner of checkbox state.
+5. Slave-reported capability count registers SHALL NOT be treated as the owner of checkbox state.
 6. Master NVS is the owner of enabled/checked state.
-7. SAVE SHALL write the current master assignment to the slave Modbus assignment registers.
+7. SAVE SHALL write the current master capability counts to the slave Modbus capability count registers.
 ```
 
 Recommended visible feature list:
@@ -611,16 +613,28 @@ ENDIF
 Master-to-slave SAVE behavior:
 
 ```text
-On SAVE, master writes 0x0010..0x0017 to the selected slave.
+On SAVE, master writes capability counts to the selected slave according to the current agreed slave contract:
 
-TEMP_SENSOR_ASSIGNMENT at 0x0010:
-Temp 1 -> bit3 / value 0x0008
-Temp 2 -> bit2 / value 0x0004
-Temp 3 -> bit1 / value 0x0002
-Temp 4 -> bit0 / value 0x0001
+```text
+0x0011 TEMP_SENSOR_COUNT
+0x0012 CO2_SENSOR_COUNT
+0x0013 PRESENCE_SENSOR_COUNT
+0x0014 RELAY_COUNT
+0x0015 IR_COUNT
+0x0016 LCD_CTRL_COUNT
+```
 
-After the assignment block write succeeds, master MAY write SAVE_CONFIG
-compatibility signal 0x00F0 = 0xA55A.
+Temperature count still maps to fixed dashboard/runtime slots:
+
+```text
+Temp count 1 exposes Point 1 / TEMP_1_X10 at 0x0100
+Temp count 2 exposes Point 1-2 / 0x0100..0x0101
+Temp count 3 exposes Point 1-3 / 0x0100..0x0102
+Temp count 4 exposes Point 1-4 / 0x0100..0x0103
+```
+
+After the capability count write succeeds, master MAY write SAVE_CONFIG
+compatibility signal `0x00F1 = 0xA55A`.
 ```
 
 Scrollable content rule:
@@ -755,7 +769,7 @@ The goal is to keep diagnostic/configuration pages dense but not semrawut.
 
 4. Pairing countdown starts
 
-5. Slave sends PAIRING_HELLO
+5. Slave listens on pairing/default Modbus address `247`
 
 6. Master reads:
    - UID/MAC
@@ -766,17 +780,19 @@ The goal is to keep diagnostic/configuration pages dense but not semrawut.
 
 8. User presses ASSIGN
 
-9. Master assigns address
+9. Master writes capability counts to `0x0011..0x0016`
 
-10. User edits name
+10. Master assigns address by writing `0x00F0`
 
-11. User selects enabled capability
+11. User edits name
 
-12. Registry saved
+12. User selects enabled capability
 
-13. Dashboard mapping recomputed
+13. Registry saved
 
-14. Polling resumed
+14. Dashboard mapping recomputed
+
+15. Polling resumed
 ```
 
 ---

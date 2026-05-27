@@ -10,7 +10,7 @@ Smart Building Master S3 + Distributed Slave Network
 Dokumen ini mendefinisikan arsitektur komunikasi RS485 terbaru menggunakan:
 
 - Modbus RTU via DFRobot_RTU Library
-- Slave wire contract v2.0.0: `docs/RS485_Modbus_Slave_Firmware_Contract_V_2.0.0.md`
+- Slave wire contract V_1_4_0: `docs/From_SLave/RS485_Modbus_Slave_Firmware_Contract_V_1_4_0.md`
 
 Dokumen ini mencakup:
 - RS485 transport architecture
@@ -193,7 +193,7 @@ Recommended:
 247 = Pairing/default address
 248-254 = Reserved/testing
 
-Per slave contract v2.0.0, all slaves boot at address 247 because slave config is RAM-only. The master owns persistent MAC to assigned-address mapping and restores known slaves after reboot.
+Per the agreed slave contract V_1_4_0, all slaves boot at address 247 because slave config is RAM-only. The master owns persistent MAC to assigned-address mapping and restores known slaves after reboot.
 
 ---
 
@@ -205,24 +205,24 @@ Per slave contract v2.0.0, all slaves boot at address 247 because slave config i
 4. Master scans pairing/default address 247
 5. Slave is already listening on address 247 after boot
 6. Master reads identity registers
-7. Master reads capability assignment/count registers
-8. UI shows MAC/identity + capability assignment/counts
+7. Master reads capability count registers
+8. UI shows MAC/identity + capability counts
 9. User assigns address
-10. Master writes capability assignment/count registers to 0x0010-0x0017
-11. Master writes new address to NODE_ADDRESS 0x0000
+10. Master writes capability count registers to `0x0011..0x0016`
+11. Master writes new address to `NODE_ADDRESS 0x00F0`
 12. Slave applies address immediately and leaves address 247
 13. Master stores MAC -> assigned address mapping
 14. Polling resumes on the assigned address
 
-SAVE_CONFIG at 0x00F0 remains an optional compatibility/config signal. Slave v2.0.0 SHALL NOT rely on local EEPROM persistence for address or capability; master persistence is authoritative.
+SAVE_CONFIG at `0x00F1` remains an optional compatibility/config signal. Slave contract V_1_4_0 SHALL NOT rely on local EEPROM persistence for address or capability; master persistence is authoritative.
 
 Recovery flow after slave reboot:
 
 1. Slave reboots and returns to address 247
 2. Master reads identity/MAC at address 247
 3. Master looks up saved MAC -> assigned address
-4. Master writes recovery MAC to 0x00F5-0x00F7
-5. Master writes recovered address to 0x00F8
+4. Master writes recovery MAC to `0x00F6..0x00F8`
+5. Master writes recovered address to `0x00F9`
 6. Matching slave applies the recovered address
 7. Non-matching slaves ignore the recovery write and remain at 247
 
@@ -230,45 +230,43 @@ Recovery flow after slave reboot:
 
 # 9. Slave Identity Registers
 
-0x0000 NODE_ADDRESS
-0x0001 FW_VERSION
-0x0002 MAC_0_1
-0x0003 MAC_2_3
-0x0004 MAC_4_5
+0x0000 DEVICE_MAGIC
+0x0005 FW_VERSION
+0x0006 MAC_0_1
+0x0007 MAC_2_3
+0x0008 MAC_4_5
 
-MAC registers are the stable identity source used by pairing and recovery. Contract v2.0.0 removes DEVICE_MAGIC, protocol, device-class, and UID identity registers from the active wire map. Master firmware may derive an internal UID from MAC for registry persistence.
+MAC registers are the stable identity source used by pairing and recovery. Master firmware may derive an internal UID from MAC for registry persistence.
 
 ---
 
 # 10. Capability Registers
 
-0x0010 TEMP_SENSOR_ASSIGNMENT       4-bit mask, bit3..bit0 = Temp1..Temp4
-0x0011 LUX_SENSOR_ASSIGNMENT        4-bit mask, bit3..bit0 = Lux1..Lux4
+0x0011 TEMP_SENSOR_COUNT
 0x0012 CO2_SENSOR_COUNT
-0x0013 PRESENCE_SENSOR_ASSIGNMENT   4-bit mask, bit3..bit0 = Presence1..Presence4
-0x0014 RELAY_ASSIGNMENT             2-bit mask, bit1..bit0 = Relay1..Relay2
-0x0015 IR_PROJECTOR_ENABLE
-0x0016 IR_AC_1_ENABLE
-0x0017 IR_AC_2_ENABLE
+0x0013 PRESENCE_SENSOR_COUNT
+0x0014 RELAY_COUNT
+0x0015 IR_COUNT
+0x0016 LCD_CTRL_COUNT
 
-The active wire contract uses these assignment/count registers. In the current master UI, the Slave Detail checklist is the owner of assignment state. Reading these registers from a slave is useful for sync/diagnostics, but it SHALL NOT override the master's checked/unchecked state after the user has configured it.
+Register `0x0010` is deprecated by the agreed slave contract and SHALL NOT be used as an active capability mask. Capability is determined from counts greater than zero. In the current master UI, the Slave Detail checklist is the owner of enabled state. Reading these registers from a slave is useful for sync/diagnostics, but it SHALL NOT override the master's checked/unchecked state after the user has configured it.
 
-When the user presses SAVE in Slave Detail, the master writes the current assignment state to `0x0010..0x0017`. For temperature:
+When the user presses SAVE in Slave Detail, the master writes the current capability counts to `0x0011..0x0016`. For temperature:
 
 ```text
-Temp 1 -> 0x0010 bit3 / 0x0008
-Temp 2 -> 0x0010 bit2 / 0x0004
-Temp 3 -> 0x0010 bit1 / 0x0002
-Temp 4 -> 0x0010 bit0 / 0x0001
+TEMP_SENSOR_COUNT = 1 -> Temp 1 active
+TEMP_SENSOR_COUNT = 2 -> Temp 1-2 active
+TEMP_SENSOR_COUNT = 3 -> Temp 1-3 active
+TEMP_SENSOR_COUNT = 4 -> Temp 1-4 active
 ```
 
-The master then may write `0x00F0 = 0xA55A` as a compatibility SAVE_CONFIG signal.
+The master then may write `0x00F1 = 0xA55A` as a compatibility SAVE_CONFIG signal.
 
 ---
 
 # 11. Capability Bitmask
 
-This bitmask is an internal master/UI convenience model, not the v2.0.0 wire contract.
+This bitmask is an internal master/UI convenience model, not the V_1_4_0 wire contract.
 
 enum CapabilityBit {
     CAP_TEMP
@@ -277,8 +275,8 @@ enum CapabilityBit {
     CAP_AC_IR
     CAP_PROJECTOR_IR
     CAP_LIGHT_RELAY
-    CAP_LUX
-    CAP_LCD_CTRL     // reserved UI capability, not present in v2.0.0 slave wire map
+    CAP_LUX          // master-side/future extension; not required by slave contract V_1_4_0
+    CAP_LCD_CTRL
 }
 
 ---
@@ -288,7 +286,7 @@ enum CapabilityBit {
 Slave A assigned by master:
 
 ```text
-0x0010 TEMP_SENSOR_ASSIGNMENT = 0x0008
+0x0011 TEMP_SENSOR_COUNT = 1
 ```
 
 Runtime register:
@@ -304,9 +302,9 @@ Runtime register:
 Slave B assigned by master:
 
 ```text
-0x0010 TEMP_SENSOR_ASSIGNMENT     = 0x000C  // Temp 1 + Temp 2
-0x0012 CO2_SENSOR_COUNT           = 1
-0x0013 PRESENCE_SENSOR_ASSIGNMENT = 0x0008  // Presence 1
+0x0011 TEMP_SENSOR_COUNT     = 2
+0x0012 CO2_SENSOR_COUNT      = 1
+0x0013 PRESENCE_SENSOR_COUNT = 1
 ```
 
 Runtime registers:
@@ -314,8 +312,8 @@ Runtime registers:
 ```text
 0x0100 TEMP_1_X10
 0x0101 TEMP_2_X10
-0x0108 CO2_PPM
-0x0109 PRESENCE_1_STATE
+0x0110 CO2_PPM
+0x0120 PRESENCE_STATE
 ```
 
 ---
@@ -373,7 +371,7 @@ Current firmware alignment:
 Implemented through DashboardModel:
 - Temperature slots
 - CO2
-- Lux
+- Lux, only when provided by an implementation-specific or future slave contract extension
 - Human Presence
 - AC availability
 - Projector availability
@@ -455,26 +453,28 @@ mapping restored automatically
 0x0102 TEMP_3_X10
 0x0103 TEMP_4_X10
 
-Light level:
-0x0104 LUX_1_LX
-0x0105 LUX_2_LX
-0x0106 LUX_3_LX
-0x0107 LUX_4_LX
-
 Air Quality:
-0x0108 CO2_PPM
+0x0110 CO2_PPM
+0x0112 HUMIDITY_X10
 
 Presence:
-0x0109 PRESENCE_1_STATE
-0x010A PRESENCE_2_STATE
-0x010B PRESENCE_3_STATE
-0x010C PRESENCE_4_STATE
+0x0120 PRESENCE_STATE
+0x0121 PRESENCE_CONF
 
 Relay:
-0x010D RELAY_1_STATE
-0x010E RELAY_2_STATE
+0x0130 RELAY_1_STATE
+0x0131 RELAY_2_STATE
 
-The master reads this runtime block as one contiguous `0x0100` length-15 Modbus read. Invalid/unassigned values SHALL follow the v2.0.0 sentinel values from the slave contract.
+Master polling SHOULD read the register groups defined by the slave contract instead of assuming one contiguous runtime block:
+
+```text
+Temperature: read 0x0100 length 4 when TEMP_SENSOR_COUNT > 0
+Air quality: read 0x0110 length 3 when CO2_SENSOR_COUNT > 0
+Presence:    read 0x0120 length 2 when PRESENCE_SENSOR_COUNT > 0
+Relay:       read/write 0x0130..0x0131 when RELAY_COUNT > 0
+```
+
+Invalid/unavailable values SHALL follow the sentinel values from the slave contract.
 
 ---
 
@@ -496,7 +496,7 @@ Current firmware control implementation status:
 
 ```text
 Implemented active write path:
-- RS485_CMD_SET_OUTPUT -> write single holding register 0x010D RELAY_1_STATE
+- RS485_CMD_SET_OUTPUT -> write single holding register 0x0130 RELAY_1_STATE
 
 Target / not yet fully implemented as active command paths:
 - 0x0200 AC1_POWER
@@ -551,7 +551,7 @@ Offline fail threshold:           5 consecutive failures
 
 Slave SHOULD:
 - expose raw sensor data
-- expose assignment/count registers required by the v2.0.0 contract
+- expose capability count registers required by `docs/From_SLave/RS485_Modbus_Slave_Firmware_Contract_V_1_4_0.md`
 - respond to Modbus request
 - avoid orchestration logic
 
