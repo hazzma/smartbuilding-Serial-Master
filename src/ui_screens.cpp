@@ -13,7 +13,6 @@ static int  editing_target = 0;
 static char wifi_ssid[32]  = "han";
 static char wifi_pass[32]  = "hanhanhan";
 static bool show_password  = false;
-static int  settings_page  = 0;
 
 static bool dashboard_env_panel = false;
 static bool dashboard_dragging = false;
@@ -25,6 +24,19 @@ static char temp_lan_gw[16] = "192.168.1.1";
 static char temp_lan_sn[16] = "255.255.255.0";
 static char temp_lan_dns[16] = "8.8.8.8";
 static bool lan_dhcp        = true;
+
+static float settings_scroll_y = 0.0f;
+static float settings_scroll_target = 0.0f;
+static bool  settings_dragging = false;
+static bool  settings_moved = false;
+static int   settings_drag_start_y = 0;
+static int   settings_last_y = 0;
+
+static const int SETTINGS_LIST_TOP = 54;
+static const int SETTINGS_LIST_BOTTOM = 310;
+static const int SETTINGS_ROW_H = 56;
+static const int SETTINGS_SCROLLBAR_X = 470;
+static const int SETTINGS_SCROLLBAR_W = 5;
 
 static float wifi_scan_scroll_y = 0.0f;
 static float wifi_scan_scroll_target = 0.0f;
@@ -103,6 +115,27 @@ static void wifi_scan_clamp_scroll(uint8_t count) {
     if (wifi_scan_scroll_target > max_scroll) wifi_scan_scroll_target = max_scroll;
     if (wifi_scan_scroll_y < 0) wifi_scan_scroll_y = 0;
     if (wifi_scan_scroll_y > max_scroll) wifi_scan_scroll_y = max_scroll;
+}
+
+static int settings_view_h() {
+    return SETTINGS_LIST_BOTTOM - SETTINGS_LIST_TOP;
+}
+
+static int settings_content_h(uint8_t count) {
+    return count * SETTINGS_ROW_H;
+}
+
+static int settings_max_scroll(uint8_t count) {
+    int max_scroll = settings_content_h(count) - settings_view_h();
+    return max_scroll > 0 ? max_scroll : 0;
+}
+
+static void settings_clamp_scroll(uint8_t count) {
+    int max_scroll = settings_max_scroll(count);
+    if (settings_scroll_target < 0) settings_scroll_target = 0;
+    if (settings_scroll_target > max_scroll) settings_scroll_target = max_scroll;
+    if (settings_scroll_y < 0) settings_scroll_y = 0;
+    if (settings_scroll_y > max_scroll) settings_scroll_y = max_scroll;
 }
 
 static int slave_list_view_h() {
@@ -575,7 +608,7 @@ void render_settings(BuildingState& state) {
     p_canvas->setTextDatum(TextDatum::TopLeft);
     p_canvas->setTextColor(COLOR_TEXT_MAIN);
     p_canvas->setTextFont(4);
-    p_canvas->drawString(settings_page == 0 ? "Settings" : "Settings 2", 20, 10);
+    p_canvas->drawString("Settings", 20, 10);
 
     drawCardBase(338, 8, 122, 38, COLOR_STAT_OFF);
     p_canvas->setTextDatum(TextDatum::MiddleCenter);
@@ -583,100 +616,66 @@ void render_settings(BuildingState& state) {
     p_canvas->setTextColor(COLOR_TEXT_MAIN);
     p_canvas->drawString("BACK", 399, 27);
 
-    struct SettingsTile {
-        int x;
-        int y;
-        int w;
-        int h;
+    struct SettingsItem {
         const char* title;
         const char* subtitle;
         uint16_t accent;
     };
 
-    if (settings_page == 0) {
-        drawCardBase(20, 58, 440, 48, COLOR_CARD_BG);
+    SettingsItem items[6] = {
+        {"Network Priority", state.net.net_priority == 0 ? "WiFi" : "LAN", COLOR_ACCENT_MAIN},
+        {"WiFi Setup", state.net.wifi_connected ? "Connected" : "Setup", (uint16_t)(state.net.wifi_connected ? COLOR_STAT_ON : COLOR_STAT_WARN)},
+        {"LAN Setup", state.net.lan_connected ? "Connected" : "Setup", (uint16_t)(state.net.lan_connected ? COLOR_STAT_ON : COLOR_STAT_WARN)},
+        {"Slave Manager", state.rs485.bus_ok ? "Fieldbus Online" : "RS485 Setup", (uint16_t)(state.rs485.bus_ok ? COLOR_STAT_ON : COLOR_STAT_ERR)},
+        {"MQTT Setup", state.net.mqtt_ok ? "Broker Connected" : "MQTT Setup", (uint16_t)(state.net.mqtt_ok ? COLOR_STAT_ON : COLOR_STAT_WARN)},
+        {"Device Info", "Name / Class Room", COLOR_STAT_ON}
+    };
+
+    int count = 6;
+    settings_clamp_scroll(count);
+
+    float diff = settings_scroll_target - settings_scroll_y;
+    if (diff > -0.5f && diff < 0.5f) settings_scroll_y = settings_scroll_target;
+    else settings_scroll_y += diff * 0.35f;
+
+    for (int i = 0; i < count; i++) {
+        int ry = SETTINGS_LIST_TOP + (i * SETTINGS_ROW_H) - (int)settings_scroll_y;
+        if (ry + SETTINGS_ROW_H - 8 < SETTINGS_LIST_TOP || ry > SETTINGS_LIST_BOTTOM) continue;
+
+        drawCardBase(20, ry, 440, SETTINGS_ROW_H - 8, COLOR_CARD_BG);
+
+        // Accent indicator
+        p_canvas->fillRoundRect(34, ry + 8, 6, SETTINGS_ROW_H - 24, 3, items[i].accent);
+
+        // Title
         p_canvas->setTextDatum(TextDatum::MiddleLeft);
-        p_canvas->setTextFont(2);
-        p_canvas->setTextColor(COLOR_TEXT_SEC);
-        p_canvas->drawString("Network Priority", 38, 82);
-        p_canvas->setTextDatum(TextDatum::MiddleRight);
         p_canvas->setTextFont(4);
         p_canvas->setTextColor(COLOR_TEXT_MAIN);
-        p_canvas->drawString(state.net.net_priority == 0 ? "WiFi" : "LAN", 442, 82);
+        p_canvas->drawString(items[i].title, 52, ry + (SETTINGS_ROW_H - 8) / 2);
 
-        SettingsTile tiles[3] = {
-            {20, 126, 136, 92, "WiFi", state.net.wifi_connected ? "Connected" : "Setup", (uint16_t)(state.net.wifi_connected ? COLOR_STAT_ON : COLOR_STAT_WARN)},
-            {172, 126, 136, 92, "LAN", state.net.lan_connected ? "Connected" : "Setup", (uint16_t)(state.net.lan_connected ? COLOR_STAT_ON : COLOR_STAT_WARN)},
-            {324, 126, 136, 92, "Slaves", state.rs485.bus_ok ? "Fieldbus" : "RS485", (uint16_t)(state.rs485.bus_ok ? COLOR_STAT_ON : COLOR_STAT_ERR)}
-        };
-
-        for (int i = 0; i < 3; i++) {
-            const SettingsTile& tile = tiles[i];
-            drawCardBase(tile.x, tile.y, tile.w, tile.h, COLOR_CARD_BG);
-            p_canvas->fillRoundRect(tile.x + 14, tile.y + 14, 8, tile.h - 28, 4, tile.accent);
-
-            p_canvas->setTextDatum(TextDatum::MiddleLeft);
-            p_canvas->setTextFont(4);
-            p_canvas->setTextColor(COLOR_TEXT_MAIN);
-            p_canvas->drawString(tile.title, tile.x + 34, tile.y + 40);
-
-            p_canvas->setTextFont(2);
-            p_canvas->setTextColor(COLOR_TEXT_SEC);
-            p_canvas->drawString(tile.subtitle, tile.x + 34, tile.y + 66);
-        }
-
-        drawCardBase(20, 238, 300, 54, COLOR_CARD_BG);
-        p_canvas->setTextColor(COLOR_TEXT_SEC);
-        p_canvas->setTextFont(2);
-        p_canvas->setTextDatum(TextDatum::MiddleLeft);
-        p_canvas->drawString("RS485", 38, 260);
-
+        // Subtitle
         p_canvas->setTextDatum(TextDatum::MiddleRight);
-        p_canvas->setTextColor(state.rs485.bus_ok ? COLOR_STAT_ON : COLOR_STAT_ERR);
-        p_canvas->drawString(state.rs485.status, 304, 260);
-        p_canvas->setTextDatum(TextDatum::MiddleLeft);
-        p_canvas->setTextColor(COLOR_TEXT_SEC);
-        p_canvas->drawString("Tap priority row to switch active network", 38, 280);
-
-        drawCardBase(338, 238, 122, 54, COLOR_ACCENT_MAIN);
-        p_canvas->setTextDatum(TextDatum::MiddleCenter);
-        p_canvas->setTextColor(COLOR_TEXT_MAIN);
         p_canvas->setTextFont(2);
-        p_canvas->drawString("NEXT", 399, 265);
-    } else {
-        SettingsTile tiles[2] = {
-            {20, 74, 210, 100, "MQTT", "Broker / topics", COLOR_ACCENT_MAIN},
-            {250, 74, 210, 100, "Device", "Info / class", COLOR_STAT_ON}
-        };
-
-        for (int i = 0; i < 2; i++) {
-            const SettingsTile& tile = tiles[i];
-            drawCardBase(tile.x, tile.y, tile.w, tile.h, COLOR_CARD_BG);
-            p_canvas->fillRoundRect(tile.x + 14, tile.y + 14, 8, tile.h - 28, 4, tile.accent);
-            p_canvas->setTextDatum(TextDatum::MiddleLeft);
-            p_canvas->setTextFont(4);
-            p_canvas->setTextColor(COLOR_TEXT_MAIN);
-            p_canvas->drawString(tile.title, tile.x + 34, tile.y + 42);
-            p_canvas->setTextFont(2);
-            p_canvas->setTextColor(COLOR_TEXT_SEC);
-            p_canvas->drawString(tile.subtitle, tile.x + 34, tile.y + 70);
-        }
-
-        drawCardBase(20, 238, 122, 54, COLOR_ACCENT_MAIN);
-        p_canvas->setTextDatum(TextDatum::MiddleCenter);
-        p_canvas->setTextColor(COLOR_TEXT_MAIN);
-        p_canvas->setTextFont(2);
-        p_canvas->drawString("PREV", 81, 265);
-
-        drawCardBase(160, 238, 300, 54, COLOR_CARD_BG);
-        p_canvas->setTextDatum(TextDatum::MiddleLeft);
         p_canvas->setTextColor(COLOR_TEXT_SEC);
-        p_canvas->drawString("Class", 178, 256);
-        p_canvas->setTextFont(4);
-        p_canvas->setTextColor(COLOR_TEXT_MAIN);
-        p_canvas->drawString(state.net.class_name[0] ? state.net.class_name : "HD01", 178, 278);
+        p_canvas->drawString(items[i].subtitle, 430, ry + (SETTINGS_ROW_H - 8) / 2);
     }
     p_canvas->setTextDatum(TextDatum::TopLeft);
+
+    int max_scroll = settings_max_scroll(count);
+    if (max_scroll > 0) {
+        int view_h = settings_view_h();
+        int content_h = settings_content_h(count);
+        int thumb_h = (view_h * view_h) / content_h;
+        if (thumb_h < 24) thumb_h = 24;
+        if (thumb_h > view_h) thumb_h = view_h;
+
+        int travel = view_h - thumb_h;
+        int thumb_y = SETTINGS_LIST_TOP + (int)((settings_scroll_y / max_scroll) * travel);
+        p_canvas->fillRoundRect(SETTINGS_SCROLLBAR_X, SETTINGS_LIST_TOP,
+                                SETTINGS_SCROLLBAR_W, view_h, 2, COLOR_CARD_BG);
+        p_canvas->fillRoundRect(SETTINGS_SCROLLBAR_X, thumb_y,
+                                SETTINGS_SCROLLBAR_W, thumb_h, 2, COLOR_ACCENT_MAIN);
+    }
 }
 
 void render_device_info(BuildingState& state) {
@@ -1978,6 +1977,11 @@ bool screens_has_animation() {
         return diff > 0.5f || diff < -0.5f;
     }
 
+    if (current_screen == SCREEN_SETTINGS) {
+        float diff = settings_scroll_target - settings_scroll_y;
+        return diff > 0.5f || diff < -0.5f;
+    }
+
     return false;
 }
 
@@ -2213,41 +2217,74 @@ void handle_dashboard_touch_event(BuildingState& state, int tx, int ty, TouchEve
     }
 }
 
-void handle_settings_touch(BuildingState& state, int tx, int ty) {
-    Serial.printf("[TOUCH] Settings tx:%d ty:%d\n", tx, ty);
+void handle_settings_touch_event(BuildingState& state, int tx, int ty, TouchEventType event) {
+    int count = 6;
+    if (event == TOUCH_EVENT_DOWN) {
+        settings_dragging = false;
+        settings_moved = false;
+        settings_drag_start_y = ty;
+        settings_last_y = ty;
 
-    if      (isHit(tx, ty, 338, 8, 122, 38)) { screens_set(SCREEN_DASHBOARD); }
-    else if (settings_page == 0 && isHit(tx, ty, 20, 126, 136, 92)) { screens_set(SCREEN_WIFI_CONFIG); }
-    else if (settings_page == 0 && isHit(tx, ty, 172, 126, 136, 92)) {
-        data_lock(state);
-        lan_dhcp = state.net.lan_use_dhcp;
-        strncpy(temp_lan_ip, state.net.lan_static_ip, 15);
-        strncpy(temp_lan_gw, state.net.lan_gateway, 15);
-        strncpy(temp_lan_sn, state.net.lan_subnet, 15);
-        strncpy(temp_lan_dns, state.net.lan_dns, 15);
-        data_unlock(state);
-        screens_set(SCREEN_LAN_CONFIG); 
+        if (isHit(tx, ty, 338, 8, 122, 38)) {
+            screens_set(SCREEN_DASHBOARD);
+            return;
+        }
+
+        if (isHit(tx, ty, 20, SETTINGS_LIST_TOP, 440, settings_view_h())) {
+            settings_dragging = true;
+        }
+        return;
     }
-    else if (settings_page == 0 && isHit(tx, ty, 324, 126, 136, 92)) { screens_set(SCREEN_SLAVE_MANAGER); }
-    else if (settings_page == 0 && isHit(tx, ty, 338, 238, 122, 54)) {
-        settings_page = 1;
+
+    if (event == TOUCH_EVENT_MOVE && settings_dragging) {
+        int dy = ty - settings_last_y;
+        if (abs(ty - settings_drag_start_y) > 5) settings_moved = true;
+
+        settings_scroll_target -= dy;
+        settings_clamp_scroll(count);
+        settings_last_y = ty;
+
         data_lock(state);
         state.ui_needs_update = true;
         data_unlock(state);
+        return;
     }
-    else if (settings_page == 1 && isHit(tx, ty, 20, 238, 122, 54)) {
-        settings_page = 0;
-        data_lock(state);
-        state.ui_needs_update = true;
-        data_unlock(state);
-    }
-    else if (settings_page == 1 && isHit(tx, ty, 250, 74, 210, 100)) { screens_set(SCREEN_DEVICE_INFO); }
-    else if (settings_page == 0 && isHit(tx, ty, 20, 58, 440, 48)) {
-        data_lock(state);
-        state.net.net_priority = (state.net.net_priority == 0) ? 1 : 0;
-        state.ui_needs_update = true;
-        data_unlock(state);
-        if (ui_callbacks.onPriorityChange) ui_callbacks.onPriorityChange(state.net.net_priority);
+
+    if (event == TOUCH_EVENT_UP && settings_dragging) {
+        settings_dragging = false;
+        settings_clamp_scroll(count);
+
+        if (!settings_moved && isHit(tx, ty, 20, SETTINGS_LIST_TOP, 440, settings_view_h())) {
+            int content_y = ty - SETTINGS_LIST_TOP + (int)settings_scroll_y;
+            int index = content_y / SETTINGS_ROW_H;
+
+            if (index >= 0 && index < count) {
+                if (index == 0) {
+                    data_lock(state);
+                    state.net.net_priority = (state.net.net_priority == 0) ? 1 : 0;
+                    state.ui_needs_update = true;
+                    data_unlock(state);
+                    if (ui_callbacks.onPriorityChange) ui_callbacks.onPriorityChange(state.net.net_priority);
+                } else if (index == 1) {
+                    screens_set(SCREEN_WIFI_CONFIG);
+                } else if (index == 2) {
+                    data_lock(state);
+                    lan_dhcp = state.net.lan_use_dhcp;
+                    strncpy(temp_lan_ip, state.net.lan_static_ip, 15);
+                    strncpy(temp_lan_gw, state.net.lan_gateway, 15);
+                    strncpy(temp_lan_sn, state.net.lan_subnet, 15);
+                    strncpy(temp_lan_dns, state.net.lan_dns, 15);
+                    data_unlock(state);
+                    screens_set(SCREEN_LAN_CONFIG);
+                } else if (index == 3) {
+                    screens_set(SCREEN_SLAVE_MANAGER);
+                } else if (index == 4) {
+                    // MQTT (No screen yet)
+                } else if (index == 5) {
+                    screens_set(SCREEN_DEVICE_INFO);
+                }
+            }
+        }
     }
 }
 
@@ -2858,7 +2895,7 @@ void handle_keyboard_touch(BuildingState& state, int tx, int ty) {
 void screens_handle_touch(BuildingState& state, int tx, int ty) {
     switch (current_screen) {
         case SCREEN_DASHBOARD:   handle_dashboard_touch(state, tx, ty);   break;
-        case SCREEN_SETTINGS:    handle_settings_touch(state, tx, ty);    break;
+        case SCREEN_SETTINGS:    /* Handled by handle_settings_touch_event */  break;
         case SCREEN_WIFI_CONFIG: handle_wifi_touch(state, tx, ty);        break;
         case SCREEN_LAN_CONFIG:  handle_lan_config_touch(state, tx, ty);  break;
         case SCREEN_WIFI_SCAN:   handle_wifi_scan_touch(state, tx, ty);   break;
@@ -2886,6 +2923,11 @@ void screens_handle_touch_event(BuildingState& state, int tx, int ty, TouchEvent
 
     if (current_screen == SCREEN_SLAVE_MANAGER) {
         handle_slave_manager_touch_event(state, tx, ty, event);
+        return;
+    }
+
+    if (current_screen == SCREEN_SETTINGS) {
+        handle_settings_touch_event(state, tx, ty, event);
         return;
     }
 

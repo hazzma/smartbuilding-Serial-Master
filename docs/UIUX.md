@@ -86,30 +86,20 @@ Firmware V2 change note:
 
 # 1.2 Settings And Device Info Navigation
 
-Settings SHALL support a next-page flow when all admin entries cannot fit comfortably on one 480x320 screen.
+Settings SHALL display all administrative options in a single unified vertical scrollable list. The HMI screen SHALL support vertical touch-drag gestures to scroll through settings items smoothly.
 
 Recommended Settings layout:
 
 ```text
-------------------------------------------------+
-| SETTINGS                              Page 1/2 |
 +------------------------------------------------+
-| [ WiFi ]                                      |
-| [ LAN ]                                       |
-| [ Slave Manager ]                             |
-|                                                |
-|                                  [ NEXT > ]    |
+| Settings                               [ BACK ]|
 +------------------------------------------------+
-```
-
-```text
-+------------------------------------------------+
-| SETTINGS                              Page 2/2 |
-+------------------------------------------------+
-| [ MQTT Setup ]                                |
-| [ Device Info ]                               |
-|                                                |
-| [ < BACK ]                                    |
+| (Icon) Network Priority              WiFi >    |
+| (Icon) WiFi Setup              Connected >    |
+| (Icon) LAN Setup                    Setup >    |
+| (Icon) Slave Manager             Fieldbus >    |
+| (Icon) MQTT Setup           Broker/Topics >    |
+| (Icon) Device Info             Class/Name >    |
 +------------------------------------------------+
 ```
 

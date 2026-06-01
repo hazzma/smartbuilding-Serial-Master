@@ -382,13 +382,11 @@ SCREEN_DASHBOARD
        |
        | Hamburger Menu
        v
-SCREEN_SETTINGS
+SCREEN_SETTINGS (Scrollable List)
        |
-  +----+----+----------------+
-  v         v                v
-SCREEN_WIFI_CONFIG
-SCREEN_LAN_CONFIG
-SCREEN_SLAVE_MANAGER
+  +----+----+----------------+----------------+
+  v         v                v                v
+SCREEN_WIFI_CONFIG   SCREEN_LAN_CONFIG   SCREEN_SLAVE_MANAGER   SCREEN_DEVICE_INFO
        |
        | SCAN
        v
