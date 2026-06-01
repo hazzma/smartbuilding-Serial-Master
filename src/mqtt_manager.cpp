@@ -24,7 +24,7 @@
 #define MQTT_PUBLISH_INTERVAL_MS  5000
 #endif
 
-const char* mqtt_server       = MQTT_SERVER_DEFAULT;
+// const char* mqtt_server       = MQTT_SERVER_DEFAULT;
 const int   mqtt_port_secure  = MQTT_PORT_SECURE_DEFAULT;
 const int   mqtt_port_normal  = MQTT_PORT_NORMAL_DEFAULT;
 const char* mqtt_user         = MQTT_USER_DEFAULT;
@@ -666,11 +666,11 @@ static void reconnect() {
     if (!mqttClient.connected()) {
         if (g_state.net.net_priority == 1 && g_state.net.lan_connected) {
             mqttClient.setClient(ethClient);
-            mqttClient.setServer(mqtt_server, mqtt_port_normal);
+            mqttClient.setServer(g_state.net.mqtt_server, mqtt_port_normal);
             Serial.print("[MQTT] Connecting via LAN...");
         } else if (g_state.net.wifi_connected) {
             mqttClient.setClient(secureClient);
-            mqttClient.setServer(mqtt_server, mqtt_port_secure);
+            mqttClient.setServer(g_state.net.mqtt_server, mqtt_port_secure);
             Serial.print("[MQTT] Connecting via WiFi (SSL)...");
         } else {
             return;

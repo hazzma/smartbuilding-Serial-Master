@@ -218,6 +218,7 @@ struct NetworkState {
     char  room_name[32];
     char  device_name[32];
     char  class_name[16];
+    char  mqtt_server[64];
     char  slave_name[2][32];
     char  conn_status[32];
     char  lan_status_detail[64];

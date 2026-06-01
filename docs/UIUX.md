@@ -86,31 +86,46 @@ Firmware V2 change note:
 
 # 1.2 Settings And Device Info Navigation
 
-Settings SHALL display all administrative options in a single unified vertical scrollable list. The HMI screen SHALL support vertical touch-drag gestures to scroll through settings items smoothly.
+Settings SHALL be divided into two static pages. Navigating between Page 1 and Page 2 is performed using horizontal swipe gestures (left swipe to transition from Page 1 to Page 2, and right swipe to transition back). The screen SHALL show page dot indicators at the bottom center to display the active page. There are no NEXT/PREV buttons.
 
-Recommended Settings layout:
+Recommended Settings Page 1 layout:
 
 ```text
 +------------------------------------------------+
 | Settings                               [ BACK ]|
 +------------------------------------------------+
-| (Icon) Network Priority              WiFi >    |
-| (Icon) WiFi Setup              Connected >    |
-| (Icon) LAN Setup                    Setup >    |
-| (Icon) Slave Manager             Fieldbus >    |
-| (Icon) MQTT Setup           Broker/Topics >    |
-| (Icon) Device Info             Class/Name >    |
+| Network Priority                       WiFi    |
++------------------------------------------------+
+| [ WiFi Setup ]   [ LAN Setup ]   [ Slaves ]    |
+| [ Connected  ]   [ Setup     ]   [ Fieldbus]   |
++------------------------------------------------+
+| RS485: Fieldbus Online                         |
+| Swipe left for MQTT & Device Info              |
++------------------------------------------------+
+|                     o   .                      |
 +------------------------------------------------+
 ```
 
-Device Info SHALL show:
-- firmware version, for example `Firmware V2`
-- attribution text: `Firmware By Hansel Kay CE LAB`
-- editable device name
-- editable class/room name
-- generated topic preview from the class/room name
-- network, MQTT, and RS485 status
-- master MAC when available
+Recommended Settings Page 2 layout:
+
+```text
++------------------------------------------------+
+| Settings 2                             [ BACK ]|
++------------------------------------------------+
+| MQTT Broker (Tap to edit)                      |
+| wd5de919.ala.asia-southeast1.emqxsl.com        |
++------------------------------------------------+
+| [ Device Name ]        [ Class Name ]          |
+| [ Meeting Room Master] [ HD01 ]                |
++------------------------------------------------+
+| [ Firmware Version ]   [ Attribution ]         |
+| [ Firmware V2.1 ]      [ Hansel Kay CE LAB ]   |
++------------------------------------------------+
+|                     .   o                      |
++------------------------------------------------+
+```
+
+Clicking the MQTT Broker, Device Name, or Class Name cards SHALL open the keyboard input overlay to edit that property. The editable properties are stored dynamically in NVS Preferences and persisted across device reboots.
 
 Class/room name behavior:
 
@@ -128,11 +143,11 @@ If class name = LA2:
     Class LA2 led
 ```
 
-What changed: Device Info becomes a second Settings-page destination and owns editable class/room naming.
+What changed: Device Info is displayed directly on Settings Page 2 instead of a separate screen, and the MQTT broker has been made fully editable.
 
-Why changed: topic naming must be easy to change when a room/class changes without editing firmware code.
+Why changed: This simplifies settings access and allows dynamic configuration of the MQTT broker domain/IP directly from the device.
 
-Implementation effect: UI should persist class/room name and regenerate default MQTT topic labels/templates from it. The preview labels are examples/templates; MQTT setup may still add `/state` and `/cmd` suffixes or explicit topic overrides.
+Implementation effect: UI persists the MQTT server, device name, and class name to NVS Preferences, regenerates topic labels accordingly, and transitions between pages 1 and 2 via horizontal touch swipes.
 
 ---
 

@@ -2,6 +2,7 @@
 #include "mapping_manager.h"
 #include <Preferences.h>
 #include <string.h>
+#include "mqtt_secrets.h"
 
 BuildingState g_state;
 
@@ -94,6 +95,7 @@ void data_load_dummy(BuildingState& state) {
         strcpy(state.net.room_name,  "Meeting Room A");
         strcpy(state.net.device_name, "Meeting Room Master");
         strcpy(state.net.class_name, "HD01");
+        strcpy(state.net.mqtt_server, MQTT_SERVER_DEFAULT);
         strcpy(state.net.slave_name[0], "Slave 1");
         strcpy(state.net.slave_name[1], "Slave 2");
         strcpy(state.net.conn_status,        "Initializing...");
@@ -222,6 +224,7 @@ void data_load_device_config(BuildingState& state) {
     data_lock(state);
     prefs.getString("device_name", state.net.device_name, sizeof(state.net.device_name));
     prefs.getString("class_name", state.net.class_name, sizeof(state.net.class_name));
+    prefs.getString("mqtt_server", state.net.mqtt_server, sizeof(state.net.mqtt_server));
     if (state.net.device_name[0] == '\0') {
         strncpy(state.net.device_name, "Meeting Room Master", sizeof(state.net.device_name) - 1);
         state.net.device_name[sizeof(state.net.device_name) - 1] = '\0';
@@ -229,6 +232,10 @@ void data_load_device_config(BuildingState& state) {
     if (state.net.class_name[0] == '\0') {
         strncpy(state.net.class_name, "HD01", sizeof(state.net.class_name) - 1);
         state.net.class_name[sizeof(state.net.class_name) - 1] = '\0';
+    }
+    if (state.net.mqtt_server[0] == '\0') {
+        strncpy(state.net.mqtt_server, MQTT_SERVER_DEFAULT, sizeof(state.net.mqtt_server) - 1);
+        state.net.mqtt_server[sizeof(state.net.mqtt_server) - 1] = '\0';
     }
     state.ui_needs_update = true;
     data_unlock(state);
@@ -243,6 +250,7 @@ void data_save_device_config(BuildingState& state) {
     data_lock(state);
     prefs.putString("device_name", state.net.device_name);
     prefs.putString("class_name", state.net.class_name);
+    prefs.putString("mqtt_server", state.net.mqtt_server);
     data_unlock(state);
 
     prefs.end();
