@@ -5,6 +5,7 @@ static Preferences prefs;
 static bool wifi_power_policy_on = true;
 static bool scan_started_by_manager = false;
 static bool wifi_scan_restore_connect = false;
+static bool wifi_connecting = false;
 static const uint32_t WIFI_SCAN_TIMEOUT_MS = 15000;
 static const uint32_t WIFI_SCAN_RADIO_WARMUP_MS = 900;
 static const uint32_t WIFI_SCAN_RETRY_DELAY_MS = 900;
@@ -45,8 +46,10 @@ void wifi_manager_connect(const char* ssid, const char* pass) {
     prefs.putString("ssid", ssid);
     prefs.putString("pass", pass);
     WiFi.mode(WIFI_STA);
+    WiFi.setAutoReconnect(true);
     WiFi.disconnect();
     WiFi.begin(ssid, pass);
+    wifi_connecting = true;
     data_lock(g_state);
     strcpy(g_state.net.wifi_status_detail, "CONNECTING...");
     g_state.ui_needs_update = true;
@@ -59,7 +62,9 @@ void wifi_manager_load_and_connect() {
     if (ssid.length() > 0) {
         Serial.printf("[WIFI] Auto-connecting to SSID: %s\n", ssid.c_str());
         WiFi.mode(WIFI_STA);
+        WiFi.setAutoReconnect(true);
         WiFi.begin(ssid.c_str(), pass.c_str());
+        wifi_connecting = true;
     } else {
         Serial.println("[WIFI] No saved credentials found.");
     }
@@ -71,8 +76,10 @@ void wifi_manager_reconnect() {
     if (ssid.length() > 0) {
         Serial.printf("[WIFI] Manual Reconnect to: %s\n", ssid.c_str());
         WiFi.mode(WIFI_STA);
+        WiFi.setAutoReconnect(true);
         WiFi.disconnect();
         WiFi.begin(ssid.c_str(), pass.c_str());
+        wifi_connecting = true;
         data_lock(g_state);
         strcpy(g_state.net.wifi_status_detail, "CONNECTING...");
         g_state.ui_needs_update = true;
@@ -81,6 +88,17 @@ void wifi_manager_reconnect() {
 }
 
 void wifi_manager_scan_request() {
+    // Cegah scan jika WiFi sedang dalam proses koneksi
+    if (wifi_connecting) {
+        Serial.println("[SCAN] Ignored: WiFi is connecting");
+        data_lock(g_state);
+        strncpy(g_state.net.wifi_scan_status, "Busy connecting...", sizeof(g_state.net.wifi_scan_status) - 1);
+        g_state.net.wifi_scan_status[sizeof(g_state.net.wifi_scan_status) - 1] = '\0';
+        g_state.ui_needs_update = true;
+        data_unlock(g_state);
+        return;
+    }
+
     data_lock(g_state);
     if (g_state.net.wifi_scan_active ||
         g_state.net.wifi_scan_start_pending ||
@@ -130,6 +148,8 @@ static void wifi_scan_restore_after_stop() {
         return;
     }
 
+    WiFi.setAutoReconnect(true);
+
     if (!wifi_scan_restore_connect) return;
 
     wifi_scan_restore_connect = false;
@@ -148,15 +168,16 @@ static void wifi_scan_restore_after_stop() {
 }
 
 static void wifi_scan_prepare_start() {
-    if (WiFi.getMode() == WIFI_OFF) {
+    if (WiFi.getMode() != WIFI_STA) {
         WiFi.mode(WIFI_STA);
     }
 
-    wifi_scan_restore_connect = (WiFi.status() == WL_CONNECTED);
-    if (wifi_scan_restore_connect) {
-        Serial.println("[SCAN] Pausing WiFi connection for scan");
-        WiFi.disconnect(false, false);
-    }
+    // Save whether we need to restore connection later
+    wifi_scan_restore_connect = wifi_power_policy_on && (prefs.getString("ssid", "").length() > 0);
+
+    Serial.println("[SCAN] Disconnecting and disabling auto-reconnect for scan");
+    WiFi.setAutoReconnect(false);
+    WiFi.disconnect(false, false);
 
     WiFi.scanDelete();
     wifi_scan_start_ready_ms = millis() + WIFI_SCAN_RADIO_WARMUP_MS;
@@ -355,14 +376,18 @@ void wifi_manager_loop() {
         char next_detail[64] = "CONNECTING...";
 
         if (status == WL_CONNECTED) {
+            wifi_connecting = false;
             strncpy(next_ssid, WiFi.SSID().c_str(), sizeof(next_ssid) - 1);
             next_ssid[sizeof(next_ssid) - 1] = '\0';
             strcpy(next_detail, "SUCCESS: Connected");
         } else if (status == WL_IDLE_STATUS || status == WL_DISCONNECTED) {
+            wifi_connecting = false;
             strcpy(next_detail, "IDLE: Disconnected");
         } else if (status == WL_CONNECT_FAILED) {
+            wifi_connecting = false;
             strcpy(next_detail, "FAILED: Wrong Credentials?");
         } else if (status == WL_NO_SSID_AVAIL) {
+            wifi_connecting = false;
             strcpy(next_detail, "FAILED: SSID Not Found");
         }
 

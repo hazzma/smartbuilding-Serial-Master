@@ -34,6 +34,33 @@ Sistem dirancang modular, dengan pemisahan tanggung jawab yang ketat antar modul
 
 ---
 
+## 1.1 Firmware V2 Change Summary
+
+Firmware V2 updates the system contract around three simple ideas: saved-slave reconnect on startup, per-sensor MQTT topics, and master-owned device profile assignment.
+
+What changed:
+- Startup SHALL check saved slave configuration first. If saved slave data exists, the master SHALL try to reconnect those slaves. If no saved slave data exists, the master SHALL do nothing until the user starts discovery.
+- MQTT publish SHALL be split per data type. Example topic labels such as `Class HD01 suhu` and `Class HD01 co2` are examples generated from editable class/room name, not hardcoded values.
+- MQTT subscribe SHALL use actuator command topics such as LED, AC, and projector.
+- LED payload SHALL be JSON because it carries ON/OFF state for 4 LED positions.
+- Temperature payload SHALL be JSON because it carries 4 DHT22 readings.
+- Simple/general sensor payloads SHALL use integer payloads unless their specific spec says otherwise.
+- After an actuator command is confirmed by the target slave, the master SHALL publish the latest state again so Flutter/dashboard clients stay synchronized.
+- Slave configuration SHALL follow the v2.1 Device Profile model. Master enforces profile policy; slave remains policy-blind.
+
+Why it changed:
+- Per-topic MQTT keeps the Flutter dashboard simple and avoids parsing one large mixed state payload for every update.
+- Saved-slave reconnect avoids unnecessary reassignment on every boot.
+- Device Profile selection prevents ambiguous assignments while allowing production profiles such as `IR_COMBO_NODE`.
+
+Implementation effect:
+- Firmware startup logic must separate saved-slave reconnect from manual discovery.
+- MQTT manager work must route data and commands by topic type.
+- RS485/slave configuration UI must select a Device Profile, then write only the v2.1 registers allowed by that master-owned profile.
+- Existing V1 examples that assume one combined MQTT state JSON or one slave with multiple main sensor types are Legacy / V1 Notes.
+
+---
+
 ## 1.2 Design Philosophy
 
 - Rendering UI tidak boleh diblokir oleh proses networking, scan WiFi, DNS, DHCP, MQTT, atau NTP.
@@ -87,16 +114,14 @@ Hardware:
 ```text
 MQTT Broker (EMQX)
        |
-       | configured MQTT topic
-       | payload: { temperature, lux, co2 }
+       | Firmware V2 per-sensor publish topics
+       | examples: Class HD01 suhu / Class HD01 co2 / Class HD01 led
        v
-mqtt_callback()
+MQTT Manager
        |
-       | data_lock(g_state)
-       | update sensor values
-       | g_state.last_data_ts = millis()
-       | g_state.ui_needs_update = true
-       | data_unlock(g_state)
+       | publish sensor payloads by topic
+       | subscribe actuator command topics
+       | forward confirmed actuator state back to MQTT
        v
 g_state
        |
@@ -108,6 +133,12 @@ screens_render(g_state)
        v
 ILI9488 Display (480x320)
 ```
+
+What changed: this data flow now describes Firmware V2 per-topic MQTT instead of the older single mixed payload example.
+
+Why it changed: Flutter/app consumers can subscribe to only the class/room data they need.
+
+Implementation effect: sensor publishing, actuator command subscription, and state synchronization must be handled as separate topic flows.
 
 WiFi scan data flow:
 
@@ -457,19 +488,20 @@ Rendering technique:
 
 ### 5.5.2 WiFi Scan While Connected
 
-On the current ESP32-S3 Arduino WiFi stack, `WiFi.scanNetworks(true, true)` may return `WIFI_SCAN_FAILED` or later report `WIFI_SCAN_FAILED` from `WiFi.scanComplete()` when the STA is already associated with an access point.
+On the current ESP32-S3 Arduino WiFi stack, `WiFi.scanNetworks(true, true)` may return `WIFI_SCAN_FAILED` (-2) or later report `WIFI_SCAN_FAILED` from `WiFi.scanComplete()` when the STA is already associated with an access point or if the background auto-reconnect task is actively trying to connect.
 
 Observed behavior:
 
 - Default saved WiFi credentials can connect successfully.
 - WiFi scan is reliable before association.
-- WiFi scan may fail repeatedly after the device is already connected to an AP.
+- WiFi scan may fail repeatedly after the device is already connected to an AP, or when the system is in a disconnected/connecting state and the auto-reconnect loop is busy trying to associate.
 
 Required mitigation:
 
-- If WiFi is already connected when a scan request starts, `wifi_manager.cpp` SHALL temporarily pause the STA connection with `WiFi.disconnect(false, false)`.
+- Before a scan request starts, `wifi_manager.cpp` SHALL temporarily pause the STA connection and stop background reconnect attempts by calling `WiFi.setAutoReconnect(false)` and `WiFi.disconnect(false, false)`. This ensures that the Wi-Fi radio is completely idle and ready for a scan, preventing the stack from returning `WIFI_SCAN_FAILED` (-2) due to connection activity.
 - The scan SHALL then run as an exclusive async scan.
-- After scan completion, scan timeout, or scan start failure, `wifi_manager.cpp` SHALL restore the previous saved connection by calling `WiFi.begin()` with credentials from NVS.
+- After scan completion, scan timeout, or scan start failure, `wifi_manager.cpp` SHALL re-enable auto-reconnect with `WiFi.setAutoReconnect(true)` and, if previous saved connection details exist and the power policy is ON, restore the connection by calling `WiFi.begin()`.
+- During manual connect, auto-boot connect, or manual reconnect, `wifi_manager.cpp` SHALL ensure that `WiFi.setAutoReconnect(true)` is explicitly set before calling `WiFi.begin()`.
 - This temporary disconnect is acceptable because scan is a user-requested configuration action; MQTT over WiFi may drop briefly and reconnect through the normal MQTT reconnect loop.
 - `WiFi.scanNetworks(true, true)` success SHALL only be interpreted as `WIFI_SCAN_RUNNING`. Return value `0` SHALL NOT be treated as an async scan start success.
 
@@ -725,7 +757,7 @@ System SHALL support dynamic priority switching between WiFi and LAN without reb
 WiFi credentials SHALL be persisted in NVS namespace `"wifi_cfg"`. Default SSID: `han`, Default Password: `hanhanhan`.
 
 **NET-003**  
-If no MQTT data received for >10 seconds, all sensor values SHALL reset to NULL: `temp = -100.0f`, `lux = -1.0f`, `co2 = -1`.
+Firmware V2 SHALL evaluate MQTT staleness per configured data topic. If one topic has no valid update for >10 seconds, only that topic's displayed value SHALL become stale/NULL; other topics that continue updating SHALL remain valid. If the MQTT connection itself is disconnected, all MQTT-backed values MAY be marked disconnected/stale together.
 
 **NET-004**  
 MQTT default transport SHALL use SSL port 8883 over WiFi and non-SSL port 1883 over LAN, unless overridden by saved MQTT setup.
@@ -758,22 +790,22 @@ Selecting an SSID from `SCREEN_WIFI_SCAN` SHALL copy that SSID into the WiFi con
 WiFi scan scrolling SHALL use a target-offset plus render-offset smoothing model, not blocking delays.
 
 **NET-014**  
-If WiFi is already connected when scan is requested, firmware SHALL temporarily disconnect STA, run the async scan exclusively, then restore the saved WiFi connection from NVS.
+Before a scan is requested, firmware SHALL temporarily disconnect the STA and disable background reconnect attempts using `WiFi.setAutoReconnect(false)` and `WiFi.disconnect(false, false)`. After the scan completes, fails, or times out, the firmware SHALL re-enable auto-reconnect using `WiFi.setAutoReconnect(true)` and restore the saved WiFi connection from NVS if the Wi-Fi power policy is ON.
 
 **NET-015**  
 Async scan start SHALL only be treated as successful when `WiFi.scanNetworks(true, true)` returns `WIFI_SCAN_RUNNING`; `0` SHALL NOT be treated as scan-running success.
 
 **NET-016**  
-MQTT broker, port, username, password, client ID, publish topic, subscribe topic, QoS/retain policy, TLS mode, preferred network interface, publish interval, and enabled/disabled state SHALL be configurable from Settings and persisted in ESP32 flash via NVS/Preferences.
+MQTT broker, port, username, password, client ID, topic prefix or per-topic configuration, QoS/retain policy, TLS mode, preferred network interface, publish interval, and enabled/disabled state SHALL be configurable from Settings and persisted in ESP32 flash via NVS/Preferences.
 
 **NET-017**  
 MQTT Setup SHALL support selecting a saved preset or creating/editing a new preset. A preset SHALL contain all connection fields and topic fields needed to reconnect without recompiling firmware.
 
 **NET-018**  
-MQTT publish payload SHALL identify the master by device name and include slave inventory, sensor data, control states, connectivity state, and firmware metadata in JSON format.
+MQTT publish behavior SHALL follow Firmware V2 per-topic publishing. Each data type SHALL publish to its own configured topic. Simple/general sensor topics SHALL use integer payloads; LED SHALL use JSON for 4 LED ON/OFF states; temperature SHALL use JSON for 4 DHT22 readings.
 
 **NET-019**  
-MQTT subscribe payload SHALL support remote control commands for LED/light relay channels 1-4, projector, AC power, AC target temperature, and other mapped controls. Remote commands SHALL be routed through the same dashboard/control state path as local touch actions.
+MQTT subscribe behavior SHALL support actuator command topics for LED, AC, projector, and other mapped controls. Remote commands SHALL be forwarded to the target slave device. After the target slave confirms the new state, firmware SHALL publish/update the related state topic for Flutter/dashboard synchronization.
 
 **NET-020**  
 Device name SHALL be editable from Settings/Info and persisted in NVS/Preferences. Device name SHALL be used in MQTT payloads, client identity where appropriate, and UI/admin labels.
@@ -803,6 +835,12 @@ Pairing mode SHALL pause normal polling to avoid bus contention.
 
 **RS485-008**  
 Slave discovery SHALL show timeout/countdown state and candidate device identity when available.
+
+**RS485-009**
+Startup SHALL check saved slave configuration before discovery. If saved slave data exists, firmware SHALL try reconnect/recovery for those slaves. If no saved slave data exists, firmware SHALL take no RS485 assignment action until the user starts discovery.
+
+**RS485-010**
+Firmware V2.1 slave assignment SHALL use master-owned Device Profiles. The master SHALL enforce profile policy and write the matching v2.1 capability registers; the slave SHALL remain policy-blind.
 
 ### 7.5 Concurrency
 
@@ -863,7 +901,7 @@ WiFi scan SHALL be advanced only from Task_Net, never from UI/touch handlers.
 | MQTT reconnect retry   | every 5 seconds              |
 | UI touch response      | < 80ms debounce              |
 | UI forced refresh      | every 2000ms                 |
-| Data staleness timeout | 10 seconds -> reset to NULL  |
+| Data staleness timeout | 10 seconds per MQTT data topic -> mark that topic stale/NULL |
 | Serial baud rate       | 115200                       |
 | Task_UI stack          | >= 16 KB                     |
 | Touch poll rate        | 50 Hz (every 20ms)           |
@@ -889,6 +927,32 @@ WiFi scan SHALL be advanced only from Task_Net, never from UI/touch handlers.
 
 Current hardcoded MQTT fields SHALL be treated as development defaults only. Production MQTT behavior SHALL be driven by saved configuration.
 
+### 10.1.0 Firmware V2 MQTT Model
+
+Firmware V2 primary MQTT model SHALL be topic-per-data-type, not one combined master state JSON as the primary app contract.
+
+What changed:
+- The master SHALL publish each sensor/control state type to its own configured topic.
+- Example publish topic labels: `Class HD01 suhu`, `Class HD01 co2`, `Class HD01 led`.
+- Example subscribe topic labels: `Class HD01 led`, `Class HD01 ac`, `Class HD01 projector`.
+- Simple/general sensor payloads SHALL be integer values.
+- LED payload SHALL be JSON because it must synchronize 4 LED ON/OFF positions.
+- Temperature payload SHALL be JSON because it must carry 4 DHT22 temperature readings.
+- Commands received on actuator topics SHALL be forwarded to the target slave.
+- After the slave confirms the actuator state, the master SHALL publish the updated state topic again.
+
+Why it changed:
+- Flutter/dashboard clients can subscribe to the exact data type they need.
+- Actuator state becomes synchronized from confirmed slave state, not only from requested command intent.
+- The topic model is easier for rooms/classes because each class can group its own sensor and actuator topics.
+
+Implementation effect:
+- MQTT setup must support topic templates or per-topic configuration for the room/class.
+- MQTT manager must publish different payload types depending on the data type.
+- Command handling must distinguish requested state from confirmed state.
+- Publish/state topics and subscribe/command topics must be distinguishable in final configuration, even when their human-readable labels look similar.
+- The old combined JSON state payload is Legacy / V1 compatibility unless a later agent explicitly keeps it as an additional diagnostic topic.
+
 ### 10.1.1 Persistent MQTT Setup
 
 Firmware SHALL define an MQTT configuration model persisted in NVS/Preferences. Minimum fields:
@@ -901,8 +965,9 @@ port
 username
 password
 client_id
-publish_topic
-subscribe_topic
+topic_prefix_or_class_name
+publish_topics_or_template
+subscribe_topics_or_template
 use_tls
 preferred_network = AUTO | WIFI | LAN
 publish_interval_sec
@@ -918,6 +983,29 @@ Rules:
 - Preferred network `AUTO` SHALL use the active network priority/availability logic.
 - Publish rate SHALL be editable from MQTT Setup as seconds, using a numeric keyboard/input field.
 - Firmware SHALL clamp publish rate to a safe range, recommended `1..3600` seconds, then convert to milliseconds internally for scheduling.
+- Firmware V2 SHALL store an editable class/room name and MAY derive topic labels from it.
+- If class/room name is `HD01`, derived example labels become `Class HD01 co2`, `Class HD01 suhu`, `Class HD01 led`, `Class HD01 ac`, and `Class HD01 projector`.
+- If class/room name changes to `LA2`, derived example labels become `Class LA2 co2`, `Class LA2 suhu`, `Class LA2 led`, `Class LA2 ac`, and `Class LA2 projector`.
+- Explicit per-topic overrides MAY exist later, but the first V2 behavior should keep the class-name-derived template as the simple default.
+- Legacy single `publish_topic` and `subscribe_topic` fields MAY be kept only for migration/diagnostic compatibility.
+
+### 10.1.1.1 MQTT QoS / Retain Policy
+
+Firmware V2 SHALL use the following MQTT delivery policy unless a later team decision revises it:
+
+| MQTT message type | QoS | Retain | Notes |
+|---|---:|---|---|
+| Simple sensor publish | 0 | true | Integer payloads such as CO2, presence, and future simple scalar sensors. |
+| LED state publish | 1 | true | JSON payload containing 4 LED ON/OFF positions. |
+| Temperature JSON publish | 0 | true | JSON payload containing 4 DHT22 positions. |
+| Actuator command subscribe/publish from app | 1 | false | Commands must not be retained to avoid replaying old actuator actions after reconnect. |
+| Master status publish | 1 | true | Online/status metadata for app/device discovery and last-known state. |
+
+What changed: QoS and retain policy is no longer an open implementation choice.
+
+Why it changed: sensors should be lightweight and last-known values should be visible after reconnect, while commands must not be replayed by retained MQTT messages.
+
+Implementation effect: MQTT Setup MAY display these defaults, but firmware agents should use these policy values as the first V2 implementation baseline.
 
 ### 10.1.2 MQTT Presets
 
@@ -943,8 +1031,8 @@ Firmware SHALL expose an Info screen under Settings.
 Info screen SHALL show:
 - firmware version
 - device name, editable by keyboard
-- author/lab text: `Made by Computer Engineering Lab`
-- publisher text: `Publisher HK`
+- class/room name, editable by keyboard
+- firmware attribution text: `Firmware By Hansel Kay CE LAB`
 - active network status
 - MQTT status
 - RS485 bus status
@@ -955,13 +1043,34 @@ Device name persistence target:
 ```text
 NVS namespace: device_cfg
 key: device_name
+key: class_name
 ```
 
-Device name SHALL be included in MQTT publish payloads and MAY be shown in the top notification/status area where space allows.
+Class/room name SHALL drive the default MQTT topic labels. Device name SHALL be included in MQTT JSON payloads where applicable and MAY be shown in the top notification/status area where space allows.
 
-### 10.1.4 MQTT Publish Format
+### 10.1.4 MQTT Publish Format - Firmware V2 Primary
 
-The master SHALL publish JSON at the configured publish topic. Payload SHOULD include this shape:
+The master SHALL publish by data type. Topic names below are human-readable examples only, not final hardcoded values.
+
+| Example publish/state topic label | Payload rule | Purpose |
+|---|---|---|
+| `Class HD01 suhu` | JSON | Four DHT22 temperature readings and optional average. |
+| `Class HD01 co2` | Integer | CO2 ppm value. |
+| `Class HD01 lux` | Integer | Lux value when available. |
+| `Class HD01 human` | Integer | Presence state such as `0` or `1`. |
+| `Class HD01 led` | JSON | Four LED ON/OFF states for synchronization. |
+
+What changed: this replaces the previous single combined state JSON as the primary MQTT requirement.
+
+Why it changed: each app screen or dashboard widget can subscribe only to the data it displays.
+
+Implementation effect: firmware must publish simple sensors as integers and structured multi-position data as JSON.
+
+Direction rule: actuator state publish topics and actuator command subscribe topics SHALL be separate configured topics or use a documented suffix convention such as `/state` and `/cmd`. If a development build temporarily uses the same literal topic, firmware SHALL ignore its own state payloads in the command handler to avoid self-echo loops.
+
+### 10.1.4.1 Legacy / V1 Combined State JSON
+
+The following combined JSON shape is Legacy / V1 compatibility. It MAY remain as an optional diagnostic or transition topic, but it SHALL NOT be the primary Firmware V2 app contract.
 
 ```json
 {
@@ -1021,7 +1130,7 @@ The master SHALL publish JSON at the configured publish topic. Payload SHOULD in
 }
 ```
 
-Current firmware development defaults are loaded from local configuration. Public repository defaults SHALL use placeholders only; real broker credentials SHALL stay in ignored local files or persisted device settings.
+Legacy/development defaults are loaded from local configuration. Public repository defaults SHALL use placeholders only; real broker credentials SHALL stay in ignored local files or persisted device settings.
 
 ```text
 broker_host: <configured broker host>
@@ -1034,19 +1143,47 @@ device_name: Meeting Room Master
 firmware_version: 1.0.0
 ```
 
-Because the current development build uses the same topic for publish and subscribe, firmware SHALL ignore payloads with `type = smart_building_master_state` when they arrive through the subscribe callback.
+Legacy compatibility note: if a development build still uses the same topic for publish and subscribe, firmware SHALL ignore payloads with `type = smart_building_master_state` when they arrive through the subscribe callback.
 
-Invalid or unavailable sensor values SHALL be encoded as `null`, not fake numeric placeholders. RS485 slave contract V_1_4_0 supports Relay 1-2 per slave at `0x0130..0x0131`; the MQTT/UI model may still expose up to 4 logical lamp channels when the master maps relays from multiple slaves or future hardware into `controls.lights.channels`.
+For the legacy combined JSON only, invalid or unavailable sensor values SHALL be encoded as `null`, not fake numeric placeholders. For Firmware V2 per-topic integer payloads, invalid/stale handling SHALL be represented by topic staleness, retained-state policy, or a documented sentinel in the MQTT spec before implementation. RS485 slave contract v2.1 supports Relay 1-2 per slave at `0x010D..0x010E`; the MQTT/UI model may still expose up to 4 logical lamp channels when the master maps relays from multiple slaves or future hardware into LED positions.
 
 Publish triggers:
 - periodic publish using configured interval
-- immediate publish after local control state changes
-- immediate publish after remote command is accepted
+- immediate publish after local control state confirmation
+- immediate publish after remote command is confirmed by the target slave
 - publish after slave online/offline/capability state changes
 
-### 10.1.5 MQTT Subscribe Command Format
+### 10.1.5 MQTT Subscribe Command Format - Firmware V2 Primary
 
-The master SHALL subscribe to the configured subscribe topic and accept JSON commands. Minimum command shape:
+The master SHALL subscribe to actuator command topics. Topic names below are human-readable examples only, not final hardcoded values.
+
+| Example subscribe/command topic label | Command payload rule | Behavior |
+|---|---|---|
+| `Class HD01 led` | JSON command | Forward LED command to target slave, wait for confirmation, publish LED JSON state. |
+| `Class HD01 ac` | JSON command | Forward AC command to target slave, wait for confirmation, publish latest AC state. |
+| `Class HD01 projector` | JSON command | Forward projector command to target slave, wait for confirmation, publish latest projector state. |
+
+What changed: command handling is topic-based and confirmation-based.
+
+Why it changed: the dashboard must show actual confirmed actuator state, not only the requested state.
+
+Implementation effect: MQTT command handling needs JSON parsing for LED, AC, and Projector commands, plus an RS485/control acknowledgement path before republishing synchronized state.
+
+What changed: AC and Projector command payloads are now JSON, not an open text-vs-JSON choice.
+
+Why it changed: JSON keeps actuator commands extensible for fields such as `power`, `target_c`, `mode`, and `input`.
+
+Implementation effect: firmware and Flutter agents SHALL implement AC/Projector command parsing as JSON.
+
+Temporary AC implementation note:
+- The dashboard/control panel SHALL keep a single AC control surface for now.
+- If the selected IR-capable slave exposes both AC 1 and AC 2 under the v2.1 slave contract, the master SHALL mirror the same AC command values to AC 1 and AC 2.
+- Mirrored fields include power, set temperature, and mode.
+- Separate AC 1 / AC 2 control surfaces are a future UI update and SHALL NOT be required for the current control panel.
+
+### 10.1.5.1 Legacy / V1 Combined Command JSON
+
+The following combined command JSON is Legacy / V1 compatibility. It MAY remain during transition, but Firmware V2 agents should not treat it as the primary app command contract.
 
 ```json
 {
@@ -1074,9 +1211,9 @@ Rules:
 - Unsupported fields SHALL be ignored safely.
 - Light control SHALL support channels `1..4`. Commands MAY include one channel, several channels, or all channels.
 - For backward compatibility during transition, a single `light.power` command MAY be interpreted as channel 1 only.
-- Accepted commands SHALL update the same `g_state.sensor`/dashboard control state used by local UI.
-- RS485-backed controls SHALL eventually route through RS485 Manager command/write paths when dedicated control register routing is implemented.
-- Firmware SHOULD publish an updated state payload after applying a command.
+- Accepted commands SHALL NOT be considered synchronized until the target device confirms the state.
+- RS485-backed controls SHALL route through RS485 Manager command/write paths.
+- Firmware SHALL publish the updated per-topic state payload after confirmation.
 
 ### 10.1.6 MQTT Screen Set
 
@@ -1093,21 +1230,37 @@ Settings Page 2:
 - Device Info
 ```
 
+Navigation rule:
+- Settings Page 1 SHALL expose a `NEXT` or page indicator control to reach Settings Page 2.
+- Settings Page 2 SHALL expose `BACK` or previous-page navigation back to Page 1.
+- Device Info SHALL be reached from Settings Page 2.
+
 MQTT Setup screen SHALL include:
 - preset selector
 - broker/host field
 - port field
 - username field
 - password field with visibility toggle
-- publish topic field
-- subscribe topic field
+- class/room topic prefix field or explicit per-topic publish fields
+- actuator subscribe topic fields or subscribe topic template
 - TLS toggle
 - preferred network selector
 - publish rate field in seconds, editable by keyboard
 - connect/test button
 - save button
 
-Info screen SHALL include editable device name and read-only firmware/lab/publisher/status fields.
+Info screen SHALL include:
+- editable device name
+- editable class/room name
+- read-only firmware version, shown as Firmware V2 or the compiled firmware version string
+- read-only attribution: `Firmware By Hansel Kay CE LAB`
+- read-only network/MQTT/RS485 status fields
+
+Class topic effect:
+- Editing class/room name SHALL update the default MQTT topic labels derived from that class name.
+- Example: class `HD01` derives labels such as `Class HD01 co2`, `Class HD01 suhu`, `Class HD01 led`.
+- Example: class `LA2` derives labels such as `Class LA2 co2`, `Class LA2 suhu`, `Class LA2 led`.
+- Topic examples are labels/templates, not hardcoded broker constants; production topics may still add suffixes such as `/state` or `/cmd` if the MQTT setup requires separate state and command topics.
 
 ---
 
@@ -1198,7 +1351,7 @@ Runtime pin config:
 
 > **Normative reference for Slave/Dashboard UX:** Detailed slave orchestration, Slave Manager layout, discovery flow, empty/default-device behavior, slave detail/configuration UI, dashboard logical mapping, manual mapping, capability enable state, and touch pagination/scroll behavior SHALL be defined in `docs/Smart_Building_Connectivity_Dashboard_Mapping_Design_UPDATED.md`.
 >
-> **Normative reference for RS485 slave wire contract:** Modbus register map, pairing behavior, recovery behavior, invalid sensor values, and slave-side implementation rules SHALL follow `docs/From_SLave/RS485_Modbus_Slave_Firmware_Contract_V_1_4_0.md`.
+> **Normative reference for RS485 slave wire contract:** Modbus register map, pairing behavior, recovery behavior, invalid sensor values, and slave-side implementation rules SHALL follow `docs/From_SLave/RS485_Modbus_Slave_Firmware_Contract v2.md` v2.1.0.
 >
 > This FSD section is only the system-level summary for transport, task ownership, and integration boundaries. If this section conflicts with `Smart_Building_Connectivity_Dashboard_Mapping_Design_UPDATED.md` on slave/dashboard UX or mapping behavior, the connectivity mapping design document SHALL win.
 
@@ -1256,23 +1409,39 @@ Master SHALL own:
 
 ## 13.3 Capability-Driven Architecture
 
-System SHALL support:
+Firmware V2 SHALL support the slave contract v2.1 Device Profile model.
 
-### Mode A
+Device profile is master-owned persistent metadata. Slave firmware SHALL remain policy-blind and only expose registers, execute Modbus requests, and apply values written by master.
+
+Supported initial profiles:
+
 ```text
-1 Slave = 1 Sensor Type
+TEMP_NODE      = Temperature sensors + optional Lux
+PRESENCE_NODE  = Presence sensors + optional Lux
+CO2_NODE       = CO2 sensors + optional Lux
+RELAY_NODE     = Relay outputs + optional Lux
+IR_COMBO_NODE  = IR AC 1 + IR AC 2 + IR Projector + optional Lux
 ```
 
-Example:
+Selection behavior:
+- Device Profile selection SHALL exist in Slave Manager / Slave Detail.
+- Master SHALL enforce which capability registers are written for the selected profile.
+- Slave SHALL NOT reject a profile combination based on application policy; profile policy belongs to master.
+- Lux is a v2.1 wire-contract capability and MAY be enabled when the selected profile/hardware supports it.
+- `IR_COMBO_NODE` intentionally allows AC 1, AC 2, and Projector under one slave to reduce hardware cost and installation complexity.
+
+What changed: Firmware V2.1 replaces the previous one-main-sensor rule with master-owned Device Profile enforcement.
+
+Why it changed: production hardware needs explicit profiles, including an intentional IR combo profile, while slaves stay simple and policy-blind.
+
+Implementation effect: Slave Detail UI persists profile choices in master storage and writes v2.1 capability registers `0x0010..0x0017`; it does not ask the slave to decide dashboard policy.
+
+### Legacy / V1 Notes
+
+The following architecture is a V1 compatibility note only and SHALL NOT be used as the primary Firmware V2.1 configuration rule:
 
 ```text
-Slave A:
-TEMP only
-```
-
-### Mode B
-```text
-1 Slave = Multiple Capability
+1 Slave = Multiple Unrelated Capability Bundle
 ```
 
 Example:
@@ -1282,7 +1451,7 @@ Slave B:
 TEMP + CO2 + HUMAN PRESENCE + IR
 ```
 
-Master SHALL support both architectures simultaneously.
+Firmware MAY keep old migration/debug handling, but user-facing V2.1 assignment SHALL follow Device Profile enforcement and the v2.1 register map.
 
 ---
 
@@ -1296,22 +1465,41 @@ System SHALL use:
 Universal Pairing Address + MAC-based Identity
 ```
 
-Default pairing address:
+Default pairing/recovery waiting address:
 
 ```text
 247
 ```
 
-Per slave contract V_1_4_0, all slaves SHALL boot on address `247` because slave config is RAM-only. Normal assigned addresses SHALL be `2..246`; address `1` is reserved by system convention.
+Per slave contract v2.1, all slaves SHALL boot on address `247` because slave config is RAM-only. Normal assigned addresses SHALL be `2..246`; address `1` is reserved by system convention.
 
-Master SHALL persist the MAC address to assigned-address mapping locally. On slave reboot, the master SHALL be able to restore a known slave by sending the saved MAC and address to the recovery registers at address `247`.
+Master SHALL persist the MAC address to assigned-address mapping locally. On slave reboot, the master SHALL be able to restore a known slave by writing the saved MAC and address to recovery registers at address `247`.
+
+Firmware V2 startup rule:
+- START.
+- Check saved slave registry.
+- If saved slave exists, try reconnect/recovery automatically.
+- Else, do nothing until user starts discovery.
+
+Unknown-device rule:
+- If a slave at address `247` has a MAC not present in the master registry, master SHALL mark it as `UNPAIRED_DEVICE_DETECTED`.
+- Master SHALL NOT automatically pair, assign address, assign capability, or add the unknown device to registry.
+- Unknown-device discovery and pairing SHALL be user initiated.
+
+What changed: recovery is automatic for known devices; pairing/discovery is user initiated for unknown devices.
+
+Why it changed: the master is the persistent source of truth for known slaves and should restore them before asking the user to discover anything.
+
+Implementation effect: discovery at address `247` is for new/unpaired devices, while recovery writes can run automatically for known offline devices.
 
 ---
 
 ## 13.5 Pairing Flow
 
+Pairing flow applies when the user adds a new slave or intentionally re-pairs a known slave. It is not the mandatory startup path.
+
 ```text
-1. User taps DISCOVER
+1. User taps DISCOVER / Pair Device
 
 2. Polling pauses
 
@@ -1321,63 +1509,77 @@ Master SHALL persist the MAC address to assigned-address mapping locally. On sla
 
 5. Slave is already listening on address 247 after boot
 
-6. Master reads identity registers
+6. Master reads identity registers 0x0000..0x0004
 
-7. Master reads MAC, firmware metadata, and capability count registers
+7. Master reads MAC and firmware metadata
 
-8. UI shows detected device
+8. UI shows detected device as UNPAIRED_DEVICE_DETECTED if MAC is unknown
 
-9. User assigns address/name
+9. User assigns address/name/room and selects Device Profile
 
-10. Master writes capability count registers `0x0011..0x0016`
+10. Master writes v2.1 capability/config registers 0x0010..0x0017 according to selected profile
 
-11. Master writes `NODE_ADDRESS 0x00F0` with a unique address 2..246
+11. Master writes NODE_ADDRESS 0x0000 with a unique address 2..246
 
 12. Slave applies address immediately and exits address 247
 
-13. Polling resumes
+13. Master stores MAC/address/profile/name/room in persistent registry
+
+14. Polling resumes
 ```
 
-`SAVE_CONFIG` at `0x00F1` remains an optional compatibility/config signal, but slave V_1_4_0 SHALL NOT rely on local EEPROM persistence for address or capability. Master persistence is the authoritative recovery source.
+`SAVE_CONFIG` is not part of the v2.1 slave contract. Slave address and capability persistence belong to master; slave remains RAM-only.
+
+What changed: pairing writes v2.1 assignment registers and address `0x0000`, then persists the selected Device Profile in master storage.
+
+Why it changed: saved slave reconnect and user-selected profile assignment must stay consistent across boot.
+
+Implementation effect: pairing code and UI should not automatically enable every register reported by a slave.
 
 ### 13.5.1 Recovery / Re-pairing Flow
 
+Automatic recovery for a known offline device:
+
 ```text
 1. Slave reboots and returns to address 247
-2. Master reads identity/MAC at address 247
-3. Master looks up saved MAC -> assigned address
-4. Master writes recovery MAC registers `0x00F6..0x00F8`
-5. Master writes recovery address register `0x00F9`
-6. Matching slave applies the recovered address
-7. Non-matching slaves ignore the recovery command and remain on 247
+2. Master has saved MAC -> assigned address in persistent registry
+3. Known assigned address does not respond
+4. Master writes recovery MAC/address to 247:0x00F4 length 4
+5. Matching slave applies the recovered address
+6. Non-matching slaves ignore the recovery command and remain on 247
+7. Master ignores Modbus response collision/error for this recovery write only
+8. Master confirms recovery by polling the recovered assigned address
+```
+
+Recovery registers:
+
+```text
+0x00F4 = RECOVERY_MAC_0_1
+0x00F5 = RECOVERY_MAC_2_3
+0x00F6 = RECOVERY_MAC_4_5
+0x00F7 = RECOVERY_NODE_ADDRESS
 ```
 
 ---
 
 ## 13.6 Pairing Configuration Registers
 
-The following Modbus registers SHALL be reserved for runtime pairing/configuration:
+The following v2.1 Modbus registers SHALL be reserved for runtime config/recovery:
 
 ```text
-0x00F0 = NODE_ADDRESS
-0x00F1 = SAVE_CONFIG
-0x00F2 = CONFIG_VERSION
-0x00F3 = LAST_ERROR
-0x00F4 = UPTIME_LOW
-0x00F5 = UPTIME_HIGH
-0x00F6 = RECOVERY_MAC_0_1
-0x00F7 = RECOVERY_MAC_2_3
-0x00F8 = RECOVERY_MAC_4_5
-0x00F9 = RECOVERY_ADDRESS
+0x00F0 = CONFIG_VERSION
+0x00F1 = LAST_ERROR
+0x00F2 = UPTIME_LOW
+0x00F3 = UPTIME_HIGH
+0x00F4 = RECOVERY_MAC_0_1
+0x00F5 = RECOVERY_MAC_2_3
+0x00F6 = RECOVERY_MAC_4_5
+0x00F7 = RECOVERY_NODE_ADDRESS
 ```
 
-Required write value:
+`SAVE_CONFIG` is removed in v2.1.
 
-```text
-0xA55A = SAVE_CONFIG compatibility/config signal written to 0x00F1
-```
-
-Slave firmware SHALL implement `NODE_ADDRESS`, capability count registers, and recovery registers. Slave firmware V_1_4_0 SHALL keep address and capability in RAM only; the master SHALL own persistent MAC/address recovery data.
+Slave firmware SHALL implement `NODE_ADDRESS`, capability assignment registers, config/recovery registers, sensor/state registers, and control registers from the v2.1 contract. Slave firmware SHALL keep address and capability in RAM only; the master SHALL own persistent registry data.
 
 ---
 
@@ -1386,43 +1588,60 @@ Slave firmware SHALL implement `NODE_ADDRESS`, capability count registers, and r
 Slave identity SHALL NOT rely only on Modbus address.
 
 Slave SHALL expose:
-- DEVICE_MAGIC
+- NODE_ADDRESS
 - FW_VERSION
 - MAC registers
 
 because:
 - address may change
-- identity must remain persistent
+- MAC identity must remain stable
 - slaves return to address 247 after reboot
+
+Identity registers:
+
+```text
+0x0000 = NODE_ADDRESS
+0x0001 = FW_VERSION
+0x0002 = MAC_0_1
+0x0003 = MAC_2_3
+0x0004 = MAC_4_5
+```
 
 ---
 
 ## 13.8 Capability Registers
 
-Slave contract V_1_4_0 uses capability count registers as the primary capability contract:
+Slave contract v2.1 uses assignment/profile registers as the primary capability contract:
 
 ```text
-0x0011 TEMP_SENSOR_COUNT
+0x0010 TEMP_SENSOR_ASSIGNMENT
+0x0011 LUX_SENSOR_ASSIGNMENT
 0x0012 CO2_SENSOR_COUNT
-0x0013 PRESENCE_SENSOR_COUNT
-0x0014 RELAY_COUNT
-0x0015 IR_COUNT
-0x0016 LCD_CTRL_COUNT
+0x0013 PRESENCE_SENSOR_ASSIGNMENT
+0x0014 RELAY_ASSIGNMENT
+0x0015 IR_PROJECTOR_ENABLE
+0x0016 IR_AC_1_ENABLE
+0x0017 IR_AC_2_ENABLE
 ```
 
-Register `0x0010` is deprecated by the agreed slave contract and SHALL NOT be used as an active capability mask. The master firmware MAY keep an internal bitmask for UI/state convenience, but the active Modbus wire contract SHALL be derived from the V_1_4_0 count registers above.
+The Slave Detail checklist is master-owned. User checked/unchecked state and Device Profile SHALL live in master persistent storage and SHALL NOT be overwritten by a later capability read from the slave. Reading the slave capability registers is diagnostic/sync data only after the master has a local assignment.
 
-The Slave Detail checklist is master-owned. User checked/unchecked state SHALL live in master NVS and SHALL NOT be overwritten by a later capability read from the slave. Reading the slave capability count registers is diagnostic/sync data only after the master has a local assignment.
+On Slave Detail SAVE, firmware SHALL write current master profile/config data to `0x0010..0x0017`. Firmware SHALL NOT write a slave-side `SAVE_CONFIG` signal for v2.1.
 
-On Slave Detail SAVE, firmware SHALL write current master capability counts to `0x0011..0x0016`; if the write succeeds, firmware MAY write `0x00F1 = 0xA55A` as the compatibility SAVE_CONFIG signal.
+Firmware V2.1 capability selection SHALL be interpreted as:
+- `TEMP_NODE` writes temperature assignment bits and optional Lux assignment bits.
+- `CO2_NODE` writes CO2 count and optional Lux assignment bits.
+- `PRESENCE_NODE` writes presence assignment bits and optional Lux assignment bits.
+- `RELAY_NODE` writes relay assignment bits and optional Lux assignment bits.
+- `IR_COMBO_NODE` may enable AC 1, AC 2, Projector, and optional Lux on the same slave.
 
-Temperature count SHALL map to fixed dashboard/runtime slots:
+Temperature assignment SHALL map to fixed dashboard/runtime slots:
 
 ```text
-TEMP_SENSOR_COUNT >= 1 -> Temperature 1 / Point 1 -> data 0x0100
-TEMP_SENSOR_COUNT >= 2 -> Temperature 2 / Point 2 -> data 0x0101
-TEMP_SENSOR_COUNT >= 3 -> Temperature 3 / Point 3 -> data 0x0102
-TEMP_SENSOR_COUNT >= 4 -> Temperature 4 / Point 4 -> data 0x0103
+TEMP_SENSOR_ASSIGNMENT bit 3 -> Temperature 1 / Point 1 -> data 0x0100
+TEMP_SENSOR_ASSIGNMENT bit 2 -> Temperature 2 / Point 2 -> data 0x0101
+TEMP_SENSOR_ASSIGNMENT bit 1 -> Temperature 3 / Point 3 -> data 0x0102
+TEMP_SENSOR_ASSIGNMENT bit 0 -> Temperature 4 / Point 4 -> data 0x0103
 ```
 
 ---
@@ -1439,98 +1658,106 @@ Smart Building Master S3
 RS485 Bus / MAX3485
   |
   +--> Slave at pairing/default address 247
-  |      Identity read:       0x0000..0x0008
-  |      Capability write:    0x0011..0x0016
-  |      Address assignment:  0x00F0
-  |      Save signal:         0x00F1 = 0xA55A
+  |      Identity read:       0x0000..0x0004
+  |      Capability write:    0x0010..0x0017
+  |      Address assignment:  0x0000
   |
   +--> Assigned slave address 2..246
-         Runtime reads:
-           Temperature        0x0100..0x0103
-           Air quality        0x0110..0x0112
-           Presence           0x0120..0x0121
+         Runtime read:
+           Sensor/state block 0x0100..0x010E
          Control writes:
-           Relay              0x0130..0x0131
-           AC                 0x0200..0x0202
-           Projector          0x0210..0x0211
+           Relay              0x010D..0x010E
+           AC 1               0x0200..0x0202
+           AC 2               0x0203..0x0205
+           AC status          0x0206..0x0207
+           Projector          0x0210..0x0212
 ```
 
 Recovery after slave reboot SHALL use the pairing/default address `247`:
 
 ```text
-1. Master reads MAC from 247 identity registers.
-2. Master looks up MAC -> saved address in master persistence.
-3. Master writes recovery MAC to 0x00F6..0x00F8.
-4. Master writes recovery address to 0x00F9.
-5. Matching slave applies the address and leaves 247.
+1. Master uses saved MAC/address from master persistent registry.
+2. Master writes recovery MAC/address to 247:0x00F4 length 4.
+3. Master ignores recovery write response collision/error only for this transaction.
+4. Matching slave applies the address and leaves 247.
+5. Master confirms by polling the recovered assigned address.
 ```
 
 ---
 
 ## 13.8.2 RS485 Header / Register Definitions
 
-The following constants mirror `docs/From_SLave/RS485_Modbus_Slave_Firmware_Contract_V_1_4_0.md` and SHALL be used when documenting or implementing master/slave communication.
+The following constants mirror `docs/From_SLave/RS485_Modbus_Slave_Firmware_Contract v2.md` v2.1.0 and SHALL be used when documenting or implementing master/slave communication.
 
 ```cpp
+// EDIT_TARGET: docs/FSD_Smart_Building_Master_UPDATED.md section 13.8.2
+// EDIT_PURPOSE: Mirror the agreed slave Modbus register constants in the FSD.
+// EDIT_REASON: Firmware V2 master/slave implementation must use one shared register vocabulary.
 #define SB_MODBUS_BAUDRATE      19200
 #define SB_MODBUS_DEFAULT_ADDR  247
 #define SB_MODBUS_MIN_ADDR      2
 #define SB_MODBUS_MAX_ADDR      246
-#define SB_SAVE_CONFIG_VALUE    0xA55A
 
-#define REG_DEVICE_MAGIC        0x0000
-#define REG_PROTOCOL_VERSION    0x0001
-#define REG_FW_VERSION          0x0005
-#define REG_MAC_0_1             0x0006
-#define REG_MAC_2_3             0x0007
-#define REG_MAC_4_5             0x0008
+#define REG_NODE_ADDRESS              0x0000
+#define REG_FW_VERSION                0x0001
+#define REG_MAC_0_1                   0x0002
+#define REG_MAC_2_3                   0x0003
+#define REG_MAC_4_5                   0x0004
 
-#define REG_TEMP_COUNT          0x0011
-#define REG_CO2_COUNT           0x0012
-#define REG_PRESENCE_COUNT      0x0013
-#define REG_RELAY_COUNT         0x0014
-#define REG_IR_COUNT            0x0015
-#define REG_LCD_COUNT           0x0016
+#define REG_TEMP_ASSIGNMENT           0x0010
+#define REG_LUX_ASSIGNMENT            0x0011
+#define REG_CO2_COUNT                 0x0012
+#define REG_PRESENCE_ASSIGNMENT       0x0013
+#define REG_RELAY_ASSIGNMENT          0x0014
+#define REG_IR_PROJECTOR_ENABLE       0x0015
+#define REG_IR_AC_1_ENABLE            0x0016
+#define REG_IR_AC_2_ENABLE            0x0017
 
-#define REG_NODE_ADDRESS        0x00F0
-#define REG_SAVE_CONFIG         0x00F1
-#define REG_CONFIG_VERSION      0x00F2
-#define REG_LAST_ERROR          0x00F3
-#define REG_UPTIME_LOW          0x00F4
-#define REG_UPTIME_HIGH         0x00F5
-#define REG_RECOVERY_MAC_0_1    0x00F6
-#define REG_RECOVERY_MAC_2_3    0x00F7
-#define REG_RECOVERY_MAC_4_5    0x00F8
-#define REG_RECOVERY_ADDRESS    0x00F9
+#define REG_CONFIG_VERSION            0x00F0
+#define REG_LAST_ERROR                0x00F1
+#define REG_UPTIME_LOW                0x00F2
+#define REG_UPTIME_HIGH               0x00F3
+#define REG_RECOVERY_MAC_0_1          0x00F4
+#define REG_RECOVERY_MAC_2_3          0x00F5
+#define REG_RECOVERY_MAC_4_5          0x00F6
+#define REG_RECOVERY_NODE_ADDRESS     0x00F7
 
-#define REG_TEMP_1_X10          0x0100
-#define REG_TEMP_2_X10          0x0101
-#define REG_TEMP_3_X10          0x0102
-#define REG_TEMP_4_X10          0x0103
-#define REG_CO2_PPM             0x0110
-#define REG_TVOC                0x0111
-#define REG_HUMIDITY_X10        0x0112
-#define REG_PRESENCE_STATE      0x0120
-#define REG_PRESENCE_CONF       0x0121
-#define REG_RELAY_1_STATE       0x0130
-#define REG_RELAY_2_STATE       0x0131
+#define REG_TEMP_1_X10                0x0100
+#define REG_TEMP_2_X10                0x0101
+#define REG_TEMP_3_X10                0x0102
+#define REG_TEMP_4_X10                0x0103
+#define REG_LUX_1_LX                  0x0104
+#define REG_LUX_2_LX                  0x0105
+#define REG_LUX_3_LX                  0x0106
+#define REG_LUX_4_LX                  0x0107
+#define REG_CO2_PPM                   0x0108
+#define REG_PRESENCE_1_STATE          0x0109
+#define REG_PRESENCE_2_STATE          0x010A
+#define REG_PRESENCE_3_STATE          0x010B
+#define REG_PRESENCE_4_STATE          0x010C
+#define REG_RELAY_1_STATE             0x010D
+#define REG_RELAY_2_STATE             0x010E
 
-#define REG_AC_POWER            0x0200
-#define REG_AC_SET_TEMP         0x0201
-#define REG_AC_MODE             0x0202
-#define REG_PROJECTOR_POWER     0x0210
-#define REG_PROJECTOR_INPUT     0x0211
-#define REG_LCD_POWER           0x0220
-#define REG_LCD_INPUT           0x0221
+#define REG_AC_1_POWER                0x0200
+#define REG_AC_1_SET_TEMP             0x0201
+#define REG_AC_1_MODE                 0x0202
+#define REG_AC_2_POWER                0x0203
+#define REG_AC_2_SET_TEMP             0x0204
+#define REG_AC_2_MODE                 0x0205
+#define REG_AC_1_COMMAND_STATUS       0x0206
+#define REG_AC_2_COMMAND_STATUS       0x0207
+#define REG_PROJECTOR_POWER           0x0210
+#define REG_PROJECTOR_INPUT           0x0211
+#define REG_PROJECTOR_COMMAND_STATUS  0x0212
 ```
 
 Sentinel values:
 
 ```text
-Temperature invalid: -32768
-CO2 invalid:         0xFFFF
-Humidity invalid:    0xFFFF
-Presence confidence: 0xFFFF
+Signed sensor read error:      -32768 (0x8000)
+Signed sensor not assigned:    -32767 (0x8001)
+Unsigned sensor read error:    0xFFFF
+Unsigned sensor not assigned:  0xFFFE
 ```
 
 ---
@@ -1566,7 +1793,13 @@ PROJECTOR_CONTROL
 
 Master SHALL map slave capability into logical slot.
 
-`LUX_MAIN` is a master-side logical slot. The current agreed slave contract V_1_4_0 does not define a dedicated LUX runtime register; any LUX support SHALL be treated as a future contract extension or implementation-specific slave data until the slave contract is revised.
+`LUX_MAIN` is a master-side logical slot backed by v2.1 Lux assignment and runtime registers. The master writes `LUX_SENSOR_ASSIGNMENT 0x0011` when the selected profile/hardware supports Lux, then reads Lux runtime values from `0x0104..0x0107`.
+
+What changed: Lux is no longer an undefined future register in the active v2.1 contract.
+
+Why it changed: v2.1 defines Lux as an optional secondary capability for production device profiles.
+
+Implementation effect: implementation agents may wire Lux UI and MQTT state to the v2.1 Lux registers when the selected device profile enables Lux.
 
 ---
 
@@ -1645,7 +1878,8 @@ System-level requirements:
 - LAN Setup SHALL expose DHCP/STATIC mode, current link/status, editable static IPv4 fields, and save action using large touch targets.
 - Slave Manager SHALL remain the entry point for discovery, pairing, polling, diagnostics, and detail/mapping navigation.
 - MQTT Setup SHALL expose presets, broker/auth/topic fields, TLS/network options, test connection, and save action using large touch targets.
-- Device Info SHALL expose firmware version, editable device name, lab/publisher attribution, network status, MQTT status, RS485 status, and master MAC where available.
+- Device Info SHALL expose firmware version, editable device name, editable class/room name, `Firmware By Hansel Kay CE LAB` attribution, network status, MQTT status, RS485 status, and master MAC where available.
+- Editing class/room name in Device Info SHALL update default MQTT topic labels generated by the class template, for example `Class HD01 co2` or `Class LA2 co2`.
 
 Detailed visual layout for these surfaces SHOULD be kept in `docs/UIUX.md` or the connectivity mapping design document where applicable; this FSD SHALL avoid duplicating full screen mockups unless required for system behavior.
 
@@ -1727,6 +1961,11 @@ IF LCD capability exists
 ENDIF
 ```
 
+Temporary AC panel rule:
+- The dashboard SHALL show only one AC control widget for the current implementation.
+- When an `IR_COMBO_NODE` or equivalent IR-capable device exposes AC 1 and AC 2, the single AC widget SHALL send the same power/set-temperature/mode command to both AC channels.
+- Per-AC control widgets may be added later, but they are not part of the current required panel behavior.
+
 If capability does not exist:
 - widget SHALL be hidden completely
 - dashboard SHALL remain visually clean
@@ -1772,16 +2011,22 @@ The following layout is only a compact example. The authoritative target layout,
 +------------------------------------------------+
 | [ Discover New Slave ] [PING] [READ] [INFO]    |
 +------------------------------------------------+
-| Room Sensor A        ONLINE                    |
-| MAC A1:B2:C3:D4      Temp x2, CO2              |
+| Temp Node A          ONLINE                    |
+| MAC A1:B2:C3:D4      Temperature x2 + Lux opt  |
 |                                                |
 | IR Controller        ONLINE                    |
-| MAC B2:C3:D4:E5      AC IR, Projector IR       |
+| MAC B2:C3:D4:E5      IR Control                |
 |                                                |
 | Unnamed Device       NEW                       |
 | MAC C3:D4:E5:F6      Temp x1                   |
 +------------------------------------------------+
 ```
+
+What changed: the example list no longer presents `Temp x2, CO2` as one active slave role.
+
+Why it changed: Firmware V2 requires one main function type per slave, with Lux as the only optional secondary feature.
+
+Implementation effect: Slave Manager summaries should show one selected main role plus optional Lux, not a V1-style mixed capability bundle.
 
 Minimum empty state:
 
@@ -1808,7 +2053,8 @@ Recommended flow:
 | 2. Keep only one new slave in pairing mode.    |
 |                                                |
 | Found: A1:B2:C3:D4:E5:F6                       |
-| Capability: Temperature x2, CO2, Presence      |
+| Available: Temperature, CO2, Presence          |
+| Selected: Temperature x2 + Lux optional         |
 |                                                |
 | Suggested name: Room Sensor                    |
 | Suggested address: 12                          |
@@ -1819,6 +2065,12 @@ Recommended flow:
 
 UI SHALL avoid exposing raw register terminology to normal users.
 
+What changed: discovery copy separates available choices from the selected V2 role.
+
+Why it changed: the slave contract exposes multiple assignment registers, while Firmware V2.1 master policy chooses a Device Profile before writing them.
+
+Implementation effect: discovery can display supported choices, but Continue/SAVE must require a selected Device Profile before writing capability registers.
+
 ---
 
 ## 13.18 Slave Configuration UI
@@ -1828,12 +2080,19 @@ Detailed Slave Detail / Configuration UI, name editing, detected/enabled feature
 Assignment rules:
 
 ```text
-All supported feature rows SHALL default to Available in each online slave detail page.
-Temperature N SHALL become Unavailable only on other slaves while Temperature N is checked on one slave.
-Unchecking Temperature N SHALL immediately make Temperature N Available on other slaves.
+Supported profile rows SHALL default to Available before selection.
+Selecting a Device Profile SHALL determine which capability rows are enabled for that slave.
+IR_COMBO_NODE SHALL allow AC 1, AC 2, and Projector together.
+Lux SHALL remain an optional auxiliary sensor when the selected profile/hardware supports Lux.
 Checked state is master-owned and persisted in master NVS.
-SAVE SHALL write the current capability counts to the selected slave's `0x0011..0x0016` registers.
+SAVE SHALL write the selected Firmware V2.1 profile/configuration to the selected slave using the agreed slave contract registers.
 ```
+
+What changed: Firmware V2.1 uses Device Profile enforcement instead of a generic one-main-sensor rule. Dashboard temperature slots may still remain globally unique, but that is a mapping constraint, not slave policy.
+
+Why it changed: master-owned profiles can prevent invalid combinations while intentionally allowing production profiles such as `IR_COMBO_NODE`.
+
+Implementation effect: the Slave Detail screen needs profile-driven enabled/unavailable states, and mapping screens may separately prevent two sources from owning the same dashboard slot.
 
 Recommended configuration screen:
 
@@ -1844,10 +2103,10 @@ Recommended configuration screen:
 | Name: [ Room Sensor A              Edit ]      |
 |                                                |
 | Use this device for:                           |
-| [x] Temperature Sensor 1                       |
-| [x] Temperature Sensor 2                       |
-| [x] CO2                                        |
-| [ ] Presence                                   |
+| [x] Temperature                                |
+| [ ] CO2                         Unavailable   |
+| [ ] Presence                    Unavailable   |
+| [x] Lux                         Optional      |
 |                                                |
 | [Save]                         [Advanced]      |
 +------------------------------------------------+
@@ -1885,7 +2144,7 @@ Recommended layout:
 | Temp 4 -> Not assigned                        |
 |                                                |
 | Controls                                      |
-| AC        -> IR Controller / AC IR            |
+| AC        -> IR Controller / AC 1+2 mirrored  |
 | Projector -> IR Controller / Projector IR     |
 | LCD       -> Not available                    |
 |                                                |
@@ -1910,6 +2169,17 @@ Slave SHALL:
 
 Master SHALL remain source of truth.
 
+Firmware V2 startup behavior:
+- Master SHALL first check saved slave data.
+- If saved slave data exists, master SHALL try reconnect/recovery.
+- If no saved slave data exists, master SHALL not auto-assign or auto-discover slaves.
+
+What changed: reset/startup recovery is saved-state-driven instead of always starting from fresh pairing.
+
+Why it changed: saved slaves should keep stable identity and mapping across firmware restarts.
+
+Implementation effect: firmware startup, RS485 recovery, and UI empty-state handling must be coordinated so no phantom slave is assigned automatically.
+
 ---
 
 ## 13.22 Final Engineering Principles
@@ -1919,9 +2189,12 @@ Master SHALL remain source of truth.
 3. Slave SHALL expose capability, not permanent role.
 4. Master SHALL assign runtime behavior.
 5. Single-sensor slave SHALL be supported.
-6. Multi-sensor slave SHALL be supported.
-7. Dynamic control visibility SHALL be supported.
-8. AVG temperature SHALL be dashboard primary metric.
-9. Detailed temperature SHALL exist on separate detail page.
-10. Modbus RTU SHALL become primary RS485 transport layer.
-11. Slave Manager, Discovery, Slave Detail, and Dashboard Mapping UX SHALL reference `Smart_Building_Connectivity_Dashboard_Mapping_Design_UPDATED.md` as the detailed source of truth.
+6. Firmware V2.1 slave assignment SHALL use master-owned Device Profiles.
+7. Slave SHALL remain policy-blind; master owns profile, room, naming, and mapping.
+8. Dynamic control visibility SHALL be supported.
+9. AVG temperature SHALL be dashboard primary metric.
+10. Detailed temperature SHALL exist on separate detail page.
+11. Modbus RTU SHALL remain the primary RS485 transport layer.
+12. Saved-slave reconnect SHALL run before manual discovery.
+13. MQTT SHALL use per-sensor publish topics and actuator subscribe topics as the Firmware V2 primary model.
+14. Slave Manager, Discovery, Slave Detail, and Dashboard Mapping UX SHALL reference `Smart_Building_Connectivity_Dashboard_Mapping_Design_UPDATED.md` as the detailed source of truth.

@@ -14,7 +14,7 @@
 
 // Set to 1 to inject a local dummy RS485 slave for UI/home-screen testing.
 // Set to 0 to remove the dummy slave and use only real discovered devices.
-#define ENABLE_DUMMY_RS485_SLAVE 1
+#define ENABLE_DUMMY_RS485_SLAVE 0
 
 static const uint64_t DUMMY_RS485_MAC = 0xD00D00000123ULL;
 

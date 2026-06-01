@@ -13,6 +13,7 @@ static int  editing_target = 0;
 static char wifi_ssid[32]  = "han";
 static char wifi_pass[32]  = "hanhanhan";
 static bool show_password  = false;
+static int  settings_page  = 0;
 
 static bool dashboard_env_panel = false;
 static bool dashboard_dragging = false;
@@ -212,6 +213,7 @@ struct DashboardUiModel {
     bool ac_on;
     bool projector_on;
     bool led_on;
+    bool ac_mirrors;
     DashboardLayoutMode layout;
 };
 
@@ -220,6 +222,20 @@ static bool rs485_has_online_slave(const RS485State& rs485) {
     if (count > RS485_MAX_SLAVES) count = RS485_MAX_SLAVES;
     for (uint8_t i = 0; i < count; i++) {
         if (rs485.slaves[i].online) return true;
+    }
+    return false;
+}
+
+static bool rs485_has_ir_combo_node(const RS485State& rs485) {
+    uint8_t count = rs485.slave_count;
+    if (count > RS485_MAX_SLAVES) count = RS485_MAX_SLAVES;
+    for (uint8_t i = 0; i < count; i++) {
+        const RS485SlaveState& slave = rs485.slaves[i];
+        if (slave.profile == IR_COMBO_NODE &&
+            (slave.enabled_mask & RS485_CAP_AC_IR) &&
+            (slave.enabled_mask & RS485_CAP_PROJECTOR_IR)) {
+            return true;
+        }
     }
     return false;
 }
@@ -255,9 +271,20 @@ static DashboardUiModel dashboard_make_ui_model(const BuildingState& state) {
     model.ac_on = state.sensor.ac_on;
     model.projector_on = state.sensor.projector_on;
     model.led_on = state.sensor.light_on;
+    model.ac_mirrors = rs485_has_ir_combo_node(state.rs485);
     model.layout = dashboard_choose_layout(model.has_temp, model.has_ac,
                                            model.has_projector, model.has_led);
     return model;
+}
+
+static void dashboard_draw_ac_widget(int x, int y, int w, int h, const DashboardUiModel& model) {
+    drawAcTargetWidget(x, y, w, h, model.ac_target_temp, model.ac_on);
+    if (!model.ac_mirrors) return;
+
+    p_canvas->setTextDatum(TextDatum::TopLeft);
+    p_canvas->setTextFont(2);
+    p_canvas->setTextColor(COLOR_TEXT_SEC);
+    p_canvas->drawString("AC1+AC2 mirror", x + 14, y + h - 18);
 }
 
 static UiRect dashboard_menu_rect() {
@@ -548,23 +575,13 @@ void render_settings(BuildingState& state) {
     p_canvas->setTextDatum(TextDatum::TopLeft);
     p_canvas->setTextColor(COLOR_TEXT_MAIN);
     p_canvas->setTextFont(4);
-    p_canvas->drawString("Settings", 20, 10);
+    p_canvas->drawString(settings_page == 0 ? "Settings" : "Settings 2", 20, 10);
 
     drawCardBase(338, 8, 122, 38, COLOR_STAT_OFF);
     p_canvas->setTextDatum(TextDatum::MiddleCenter);
     p_canvas->setTextFont(2);
     p_canvas->setTextColor(COLOR_TEXT_MAIN);
     p_canvas->drawString("BACK", 399, 27);
-
-    drawCardBase(20, 58, 440, 48, COLOR_CARD_BG);
-    p_canvas->setTextDatum(TextDatum::MiddleLeft);
-    p_canvas->setTextFont(2);
-    p_canvas->setTextColor(COLOR_TEXT_SEC);
-    p_canvas->drawString("Network Priority", 38, 82);
-    p_canvas->setTextDatum(TextDatum::MiddleRight);
-    p_canvas->setTextFont(4);
-    p_canvas->setTextColor(COLOR_TEXT_MAIN);
-    p_canvas->drawString(state.net.net_priority == 0 ? "WiFi" : "LAN", 442, 82);
 
     struct SettingsTile {
         int x;
@@ -576,39 +593,145 @@ void render_settings(BuildingState& state) {
         uint16_t accent;
     };
 
-    SettingsTile tiles[3] = {
-        {20, 126, 136, 92, "WiFi", state.net.wifi_connected ? "Connected" : "Setup", (uint16_t)(state.net.wifi_connected ? COLOR_STAT_ON : COLOR_STAT_WARN)},
-        {172, 126, 136, 92, "LAN", state.net.lan_connected ? "Connected" : "Setup", (uint16_t)(state.net.lan_connected ? COLOR_STAT_ON : COLOR_STAT_WARN)},
-        {324, 126, 136, 92, "Slaves", state.rs485.bus_ok ? "Fieldbus" : "RS485", (uint16_t)(state.rs485.bus_ok ? COLOR_STAT_ON : COLOR_STAT_ERR)}
-    };
-
-    for (int i = 0; i < 3; i++) {
-        const SettingsTile& tile = tiles[i];
-        drawCardBase(tile.x, tile.y, tile.w, tile.h, COLOR_CARD_BG);
-        p_canvas->fillRoundRect(tile.x + 14, tile.y + 14, 8, tile.h - 28, 4, tile.accent);
-
+    if (settings_page == 0) {
+        drawCardBase(20, 58, 440, 48, COLOR_CARD_BG);
         p_canvas->setTextDatum(TextDatum::MiddleLeft);
-        p_canvas->setTextFont(4);
-        p_canvas->setTextColor(COLOR_TEXT_MAIN);
-        p_canvas->drawString(tile.title, tile.x + 34, tile.y + 40);
-
         p_canvas->setTextFont(2);
         p_canvas->setTextColor(COLOR_TEXT_SEC);
-        p_canvas->drawString(tile.subtitle, tile.x + 34, tile.y + 66);
+        p_canvas->drawString("Network Priority", 38, 82);
+        p_canvas->setTextDatum(TextDatum::MiddleRight);
+        p_canvas->setTextFont(4);
+        p_canvas->setTextColor(COLOR_TEXT_MAIN);
+        p_canvas->drawString(state.net.net_priority == 0 ? "WiFi" : "LAN", 442, 82);
+
+        SettingsTile tiles[3] = {
+            {20, 126, 136, 92, "WiFi", state.net.wifi_connected ? "Connected" : "Setup", (uint16_t)(state.net.wifi_connected ? COLOR_STAT_ON : COLOR_STAT_WARN)},
+            {172, 126, 136, 92, "LAN", state.net.lan_connected ? "Connected" : "Setup", (uint16_t)(state.net.lan_connected ? COLOR_STAT_ON : COLOR_STAT_WARN)},
+            {324, 126, 136, 92, "Slaves", state.rs485.bus_ok ? "Fieldbus" : "RS485", (uint16_t)(state.rs485.bus_ok ? COLOR_STAT_ON : COLOR_STAT_ERR)}
+        };
+
+        for (int i = 0; i < 3; i++) {
+            const SettingsTile& tile = tiles[i];
+            drawCardBase(tile.x, tile.y, tile.w, tile.h, COLOR_CARD_BG);
+            p_canvas->fillRoundRect(tile.x + 14, tile.y + 14, 8, tile.h - 28, 4, tile.accent);
+
+            p_canvas->setTextDatum(TextDatum::MiddleLeft);
+            p_canvas->setTextFont(4);
+            p_canvas->setTextColor(COLOR_TEXT_MAIN);
+            p_canvas->drawString(tile.title, tile.x + 34, tile.y + 40);
+
+            p_canvas->setTextFont(2);
+            p_canvas->setTextColor(COLOR_TEXT_SEC);
+            p_canvas->drawString(tile.subtitle, tile.x + 34, tile.y + 66);
+        }
+
+        drawCardBase(20, 238, 300, 54, COLOR_CARD_BG);
+        p_canvas->setTextColor(COLOR_TEXT_SEC);
+        p_canvas->setTextFont(2);
+        p_canvas->setTextDatum(TextDatum::MiddleLeft);
+        p_canvas->drawString("RS485", 38, 260);
+
+        p_canvas->setTextDatum(TextDatum::MiddleRight);
+        p_canvas->setTextColor(state.rs485.bus_ok ? COLOR_STAT_ON : COLOR_STAT_ERR);
+        p_canvas->drawString(state.rs485.status, 304, 260);
+        p_canvas->setTextDatum(TextDatum::MiddleLeft);
+        p_canvas->setTextColor(COLOR_TEXT_SEC);
+        p_canvas->drawString("Tap priority row to switch active network", 38, 280);
+
+        drawCardBase(338, 238, 122, 54, COLOR_ACCENT_MAIN);
+        p_canvas->setTextDatum(TextDatum::MiddleCenter);
+        p_canvas->setTextColor(COLOR_TEXT_MAIN);
+        p_canvas->setTextFont(2);
+        p_canvas->drawString("NEXT", 399, 265);
+    } else {
+        SettingsTile tiles[2] = {
+            {20, 74, 210, 100, "MQTT", "Broker / topics", COLOR_ACCENT_MAIN},
+            {250, 74, 210, 100, "Device", "Info / class", COLOR_STAT_ON}
+        };
+
+        for (int i = 0; i < 2; i++) {
+            const SettingsTile& tile = tiles[i];
+            drawCardBase(tile.x, tile.y, tile.w, tile.h, COLOR_CARD_BG);
+            p_canvas->fillRoundRect(tile.x + 14, tile.y + 14, 8, tile.h - 28, 4, tile.accent);
+            p_canvas->setTextDatum(TextDatum::MiddleLeft);
+            p_canvas->setTextFont(4);
+            p_canvas->setTextColor(COLOR_TEXT_MAIN);
+            p_canvas->drawString(tile.title, tile.x + 34, tile.y + 42);
+            p_canvas->setTextFont(2);
+            p_canvas->setTextColor(COLOR_TEXT_SEC);
+            p_canvas->drawString(tile.subtitle, tile.x + 34, tile.y + 70);
+        }
+
+        drawCardBase(20, 238, 122, 54, COLOR_ACCENT_MAIN);
+        p_canvas->setTextDatum(TextDatum::MiddleCenter);
+        p_canvas->setTextColor(COLOR_TEXT_MAIN);
+        p_canvas->setTextFont(2);
+        p_canvas->drawString("PREV", 81, 265);
+
+        drawCardBase(160, 238, 300, 54, COLOR_CARD_BG);
+        p_canvas->setTextDatum(TextDatum::MiddleLeft);
+        p_canvas->setTextColor(COLOR_TEXT_SEC);
+        p_canvas->drawString("Class", 178, 256);
+        p_canvas->setTextFont(4);
+        p_canvas->setTextColor(COLOR_TEXT_MAIN);
+        p_canvas->drawString(state.net.class_name[0] ? state.net.class_name : "HD01", 178, 278);
     }
+    p_canvas->setTextDatum(TextDatum::TopLeft);
+}
 
-    drawCardBase(20, 238, 440, 54, COLOR_CARD_BG);
-    p_canvas->setTextColor(COLOR_TEXT_SEC);
+void render_device_info(BuildingState& state) {
+    drawWallpaperBackground();
+
+    p_canvas->setTextDatum(TextDatum::TopLeft);
+    p_canvas->setTextColor(COLOR_TEXT_MAIN);
+    p_canvas->setTextFont(4);
+    p_canvas->drawString("Device Info", 20, 10);
+
+    drawCardBase(338, 8, 122, 38, COLOR_STAT_OFF);
+    p_canvas->setTextDatum(TextDatum::MiddleCenter);
     p_canvas->setTextFont(2);
-    p_canvas->setTextDatum(TextDatum::MiddleLeft);
-    p_canvas->drawString("RS485", 38, 260);
+    p_canvas->setTextColor(COLOR_TEXT_MAIN);
+    p_canvas->drawString("BACK", 399, 27);
 
-    p_canvas->setTextDatum(TextDatum::MiddleRight);
-    p_canvas->setTextColor(state.rs485.bus_ok ? COLOR_STAT_ON : COLOR_STAT_ERR);
-    p_canvas->drawString(state.rs485.status, 442, 260);
+    drawCardBase(20, 58, 440, 48, COLOR_CARD_BG);
     p_canvas->setTextDatum(TextDatum::MiddleLeft);
+    p_canvas->setTextFont(2);
     p_canvas->setTextColor(COLOR_TEXT_SEC);
-    p_canvas->drawString("Tap priority row to switch active network", 38, 280);
+    p_canvas->drawString("Device Name", 38, 74);
+    p_canvas->setTextFont(4);
+    p_canvas->setTextColor(COLOR_TEXT_MAIN);
+    p_canvas->drawString(state.net.device_name[0] ? state.net.device_name : "Meeting Room Master", 38, 94);
+
+    drawCardBase(20, 118, 210, 54, COLOR_CARD_BG);
+    p_canvas->setTextFont(2);
+    p_canvas->setTextColor(COLOR_TEXT_SEC);
+    p_canvas->drawString("Class Name", 38, 136);
+    p_canvas->setTextFont(4);
+    p_canvas->setTextColor(COLOR_TEXT_MAIN);
+    p_canvas->drawString(state.net.class_name[0] ? state.net.class_name : "HD01", 38, 156);
+
+    drawCardBase(250, 118, 210, 54, COLOR_CARD_BG);
+    p_canvas->setTextFont(2);
+    p_canvas->setTextColor(COLOR_TEXT_SEC);
+    p_canvas->drawString("Firmware", 268, 136);
+    p_canvas->setTextFont(4);
+    p_canvas->setTextColor(COLOR_TEXT_MAIN);
+    p_canvas->drawString("Firmware V2", 268, 156);
+
+    drawCardBase(20, 184, 440, 48, COLOR_CARD_BG);
+    p_canvas->setTextFont(2);
+    p_canvas->setTextColor(COLOR_TEXT_SEC);
+    p_canvas->drawString("Firmware By Hansel Kay CE LAB", 38, 204);
+
+    char preview[64];
+    snprintf(preview, sizeof(preview), "Topic: Class %s co2", state.net.class_name[0] ? state.net.class_name : "HD01");
+    drawCardBase(20, 244, 440, 54, COLOR_CARD_BG);
+    p_canvas->setTextFont(2);
+    p_canvas->setTextColor(COLOR_TEXT_MAIN);
+    p_canvas->drawString(preview, 38, 262);
+    p_canvas->setTextColor(state.net.mqtt_ok ? COLOR_STAT_ON : COLOR_STAT_WARN);
+    p_canvas->drawString(state.net.mqtt_ok ? "MQTT OK" : "MQTT offline", 38, 282);
+
     p_canvas->setTextDatum(TextDatum::TopLeft);
 }
 
@@ -778,6 +901,33 @@ static const char* slave_role_name(uint8_t role) {
     }
 }
 
+static DeviceProfile slave_effective_profile(const RS485SlaveState& slave) {
+    if (slave.profile != DEVICE_PROFILE_UNASSIGNED) return slave.profile;
+    uint16_t mask = slave.enabled_mask ? slave.enabled_mask : slave.capability;
+    return device_profile_from_capabilities(mask);
+}
+
+static bool slave_profile_allows(const RS485SlaveState& slave, uint16_t capability) {
+    DeviceProfile profile = slave_effective_profile(slave);
+    uint16_t allowed = device_profile_capability_mask(profile);
+    return allowed != 0 && (allowed & capability);
+}
+
+static bool pairing_candidate_is_unknown(const RS485State& rs485) {
+    if (!rs485.pairing_candidate_ready) return false;
+    const RS485SlaveState& candidate = rs485.pairing_candidate;
+    if (candidate.mac == 0 && candidate.uid == 0) return true;
+
+    uint8_t count = rs485.slave_count;
+    if (count > RS485_MAX_SLAVES) count = RS485_MAX_SLAVES;
+    for (uint8_t i = 0; i < count; i++) {
+        const RS485SlaveState& slave = rs485.slaves[i];
+        if (candidate.mac != 0 && slave.mac == candidate.mac) return false;
+        if (candidate.mac == 0 && candidate.uid != 0 && slave.uid == candidate.uid) return false;
+    }
+    return true;
+}
+
 static void slave_capability_label(uint16_t capability, char* out, size_t out_size) {
     if (!out || out_size == 0) return;
     out[0] = '\0';
@@ -870,14 +1020,16 @@ static void draw_slave_manager_focus_panel(const RS485State& rs485, bool empty_l
         snprintf(uid_buf, sizeof(uid_buf), "UID %08lX", (unsigned long)rs485.pairing_candidate.uid);
 
         p_canvas->setTextFont(4);
-        p_canvas->setTextColor(COLOR_STAT_ON);
-        p_canvas->drawString("Slave Found", 240, 180);
+        p_canvas->setTextColor(pairing_candidate_is_unknown(rs485) ? COLOR_STAT_WARN : COLOR_STAT_ON);
+        p_canvas->drawString(pairing_candidate_is_unknown(rs485) ? "UNPAIRED DEVICE" : "Slave Found", 240, 180);
         p_canvas->setTextFont(2);
         p_canvas->setTextColor(COLOR_TEXT_MAIN);
         p_canvas->drawString(uid_buf, 240, 212);
         p_canvas->setTextColor(COLOR_TEXT_SEC);
         p_canvas->drawString(cap_buf[0] ? cap_buf : "Capability unknown", 240, 236);
-        p_canvas->drawString("Tap ASSIGN AUTO to add device", 240, 258);
+        p_canvas->drawString(pairing_candidate_is_unknown(rs485) ?
+                             "UNPAIRED_DEVICE_DETECTED" :
+                             "Known pairing candidate", 240, 258);
     } else if (rs485.pairing_active) {
         uint32_t timeout_ms = rs485.pairing_timeout_ms;
         uint32_t elapsed_ms = millis() - rs485.pairing_started_ms;
@@ -958,20 +1110,26 @@ struct FeatureRow {
     const char* label;
     uint16_t capability;
     uint8_t channel;
+    DeviceProfile profile;
+    bool profile_row;
 };
 
 static const FeatureRow SLAVE_FEATURE_ROWS[] = {
-    {"Temperature 1", RS485_CAP_TEMP, 0},
-    {"Temperature 2", RS485_CAP_TEMP, 1},
-    {"Temperature 3", RS485_CAP_TEMP, 2},
-    {"Temperature 4", RS485_CAP_TEMP, 3},
-    {"CO2", RS485_CAP_CO2, 0},
-    {"Lux", RS485_CAP_LUX, 0},
-    {"Human Presence", RS485_CAP_PRESENCE, 0},
-    {"AC Control", RS485_CAP_AC_IR, 0},
-    {"Projector Control", RS485_CAP_PROJECTOR_IR, 0},
-    {"LCD Control", RS485_CAP_LCD_CTRL, 0},
-    {"Light Relay", RS485_CAP_LIGHT_RELAY, 0}
+    {"TEMP_NODE", 0, 0, TEMP_NODE, true},
+    {"PRESENCE_NODE", 0, 0, PRESENCE_NODE, true},
+    {"CO2_NODE", 0, 0, CO2_NODE, true},
+    {"RELAY_NODE", 0, 0, RELAY_NODE, true},
+    {"IR_COMBO_NODE", 0, 0, IR_COMBO_NODE, true},
+    {"Temperature 1", RS485_CAP_TEMP, 0, DEVICE_PROFILE_UNASSIGNED, false},
+    {"Temperature 2", RS485_CAP_TEMP, 1, DEVICE_PROFILE_UNASSIGNED, false},
+    {"Temperature 3", RS485_CAP_TEMP, 2, DEVICE_PROFILE_UNASSIGNED, false},
+    {"Temperature 4", RS485_CAP_TEMP, 3, DEVICE_PROFILE_UNASSIGNED, false},
+    {"Lux Optional", RS485_CAP_LUX, 0, DEVICE_PROFILE_UNASSIGNED, false},
+    {"CO2", RS485_CAP_CO2, 0, DEVICE_PROFILE_UNASSIGNED, false},
+    {"Human Presence", RS485_CAP_PRESENCE, 0, DEVICE_PROFILE_UNASSIGNED, false},
+    {"Light Relay 1-2", RS485_CAP_LIGHT_RELAY, 0, DEVICE_PROFILE_UNASSIGNED, false},
+    {"AC 1+2 Mirror", RS485_CAP_AC_IR, 0, DEVICE_PROFILE_UNASSIGNED, false},
+    {"Projector IR", RS485_CAP_PROJECTOR_IR, 0, DEVICE_PROFILE_UNASSIGNED, false}
 };
 
 static uint8_t slave_feature_total_count() {
@@ -1013,8 +1171,23 @@ static bool temp_channel_enabled_by_other_slave(const RS485State& rs485,
     return false;
 }
 
+static bool slave_feature_is_main(uint16_t capability) {
+    return capability != RS485_CAP_LUX;
+}
+
+static bool slave_has_other_main_enabled(const RS485SlaveState& slave, uint16_t capability) {
+    if (!slave_feature_is_main(capability)) return false;
+    uint16_t main_mask = slave.enabled_mask & ~RS485_CAP_LUX;
+    if (capability == RS485_CAP_TEMP && (main_mask & RS485_CAP_TEMP)) {
+        return false;
+    }
+    return (main_mask & ~capability) != 0;
+}
+
 static bool slave_feature_available(const RS485SlaveState& slave, const FeatureRow& row) {
+    if (row.profile_row) return true;
     if (slave.address == 0 && slave.uid == 0) return true;
+    if (!slave_profile_allows(slave, row.capability)) return false;
     if (row.capability == RS485_CAP_TEMP) {
         return row.channel < DASHBOARD_TEMP_SLOTS;
     }
@@ -1022,6 +1195,7 @@ static bool slave_feature_available(const RS485SlaveState& slave, const FeatureR
 }
 
 static bool slave_feature_enabled(const RS485SlaveState& slave, const FeatureRow& row) {
+    if (row.profile_row) return slave_effective_profile(slave) == row.profile;
     if (!slave_feature_available(slave, row)) return false;
     if (row.capability == RS485_CAP_TEMP) {
         return (slave.enabled_mask & RS485_CAP_TEMP) &&
@@ -1039,6 +1213,55 @@ static uint8_t temp_mask_count(uint8_t mask) {
     return count;
 }
 
+static void slave_apply_profile_policy(RS485SlaveState& slave, DeviceProfile profile, bool set_defaults) {
+    slave.profile = profile;
+    uint16_t allowed = device_profile_capability_mask(profile);
+    slave.capability = allowed;
+    slave.enabled_mask &= allowed;
+
+    if (!(allowed & RS485_CAP_TEMP)) {
+        slave.temp_available_mask = 0;
+        slave.temp_enabled_mask = 0;
+        slave.temp_count = 0;
+    } else {
+        slave.temp_available_mask = 0x0F;
+        slave.temp_count = DASHBOARD_TEMP_SLOTS;
+        if (set_defaults) {
+            slave.temp_enabled_mask = 0x0F;
+            slave.enabled_mask |= RS485_CAP_TEMP;
+        }
+    }
+
+    if (!(allowed & RS485_CAP_CO2)) slave.co2_count = 0;
+    else if (set_defaults || slave.co2_count == 0) slave.co2_count = 1;
+
+    if (!(allowed & RS485_CAP_PRESENCE)) slave.presence_count = 0;
+    else if (set_defaults || slave.presence_count == 0) slave.presence_count = 1;
+
+    if (!(allowed & RS485_CAP_LIGHT_RELAY)) slave.relay_count = 0;
+    else if (set_defaults || slave.relay_count == 0) slave.relay_count = 2;
+
+    if (!(allowed & (RS485_CAP_AC_IR | RS485_CAP_PROJECTOR_IR))) slave.ir_count = 0;
+    else if (set_defaults || slave.ir_count == 0) slave.ir_count = 3;
+
+    if (!(allowed & RS485_CAP_LUX)) {
+        slave.lux_count = 0;
+        slave.enabled_mask &= ~RS485_CAP_LUX;
+    } else if (slave.lux_count == 0) {
+        slave.lux_count = 1;
+    }
+
+    if (set_defaults) {
+        switch (profile) {
+            case PRESENCE_NODE: slave.enabled_mask |= RS485_CAP_PRESENCE; break;
+            case CO2_NODE: slave.enabled_mask |= RS485_CAP_CO2; break;
+            case RELAY_NODE: slave.enabled_mask |= RS485_CAP_LIGHT_RELAY; break;
+            case IR_COMBO_NODE: slave.enabled_mask |= RS485_CAP_AC_IR | RS485_CAP_PROJECTOR_IR; break;
+            default: break;
+        }
+    }
+}
+
 static void slave_mark_feature_assignable(RS485SlaveState& slave, const FeatureRow& feature) {
     slave.capability |= feature.capability;
     if (feature.capability == RS485_CAP_TEMP) {
@@ -1049,12 +1272,13 @@ static void slave_mark_feature_assignable(RS485SlaveState& slave, const FeatureR
     } else if (feature.capability == RS485_CAP_PRESENCE) {
         if (slave.presence_count == 0) slave.presence_count = 1;
     } else if (feature.capability == RS485_CAP_LUX) {
+        slave.capability |= RS485_CAP_LUX;
         if (slave.lux_count == 0) slave.lux_count = 1;
     } else if (feature.capability == RS485_CAP_LIGHT_RELAY) {
         if (slave.relay_count == 0) slave.relay_count = 2;
     } else if (feature.capability == RS485_CAP_AC_IR ||
                feature.capability == RS485_CAP_PROJECTOR_IR) {
-        if (slave.ir_count == 0) slave.ir_count = 1;
+        if (slave.ir_count == 0) slave.ir_count = 3;
     } else if (feature.capability == RS485_CAP_LCD_CTRL) {
         if (slave.lcd_count == 0) slave.lcd_count = 1;
     }
@@ -1199,7 +1423,7 @@ void render_slave_manager(BuildingState& state) {
     p_canvas->drawString(state.rs485.pairing_active ? "CANCEL" : "DISCOVER", 76, 123);
     p_canvas->drawString(state.rs485.poll_enabled ? "POLL ON" : "POLL OFF", 196, 123);
     if (state.rs485.pairing_candidate_ready) {
-        p_canvas->drawString("ASSIGN AUTO", 360, 123);
+        p_canvas->drawString(pairing_candidate_is_unknown(state.rs485) ? "PAIR DEVICE" : "ASSIGN AUTO", 360, 123);
     } else {
         p_canvas->drawString("PING", 290, 123);
         p_canvas->drawString("READ", 360, 123);
@@ -1315,7 +1539,7 @@ void render_slave_manager(BuildingState& state) {
         if (!placeholder && slave->uid != 0) {
             snprintf(row, sizeof(row), "UID:%08lX  %s",
                      (unsigned long)slave->uid,
-                     cap_buf);
+                     device_profile_name(slave_effective_profile(*slave)));
         } else {
             snprintf(row, sizeof(row), "%s  %s", mac_buf, cap_buf);
         }
@@ -1408,9 +1632,9 @@ void render_slave_detail(BuildingState& state) {
     char mac_buf[40];
     char id_buf[96];
     slave_mac_label(slave.mac, mac_buf, sizeof(mac_buf));
-    snprintf(id_buf, sizeof(id_buf), "Addr 0x%02X  UID %08lX  %s",
+    snprintf(id_buf, sizeof(id_buf), "Addr 0x%02X  %s  %s",
              slave.address,
-             (unsigned long)slave.uid,
+             device_profile_name(slave_effective_profile(slave)),
              slave_status_label(slave));
     p_canvas->setTextFont(2);
     p_canvas->setTextColor(COLOR_TEXT_MAIN);
@@ -1420,7 +1644,7 @@ void render_slave_detail(BuildingState& state) {
 
     p_canvas->setTextFont(2);
     p_canvas->setTextColor(COLOR_TEXT_SEC);
-    p_canvas->drawString("Enabled features", 24, 172);
+    p_canvas->drawString("Device Profile / allowed rows", 24, 172);
 
     uint8_t first_feature = slave_feature_page * SLAVE_FEATURE_PAGE_ROWS;
     uint8_t total_features = slave_feature_total_count();
@@ -1433,7 +1657,7 @@ void render_slave_detail(BuildingState& state) {
         int y = 190 + row * 31;
         bool available = slave_feature_available(slave, feature);
         bool enabled = slave_feature_enabled(slave, feature);
-        if (feature.capability == RS485_CAP_TEMP && !enabled &&
+        if (!feature.profile_row && feature.capability == RS485_CAP_TEMP && !enabled &&
             temp_channel_enabled_by_other_slave(state.rs485, detail_index, feature.channel)) {
             available = false;
         }
@@ -1450,7 +1674,10 @@ void render_slave_detail(BuildingState& state) {
 
         p_canvas->setTextDatum(TextDatum::MiddleRight);
         p_canvas->setTextColor(!available ? COLOR_TEXT_SEC : (enabled ? COLOR_STAT_ON : COLOR_TEXT_SEC));
-        p_canvas->drawString(!available ? "Unavailable" : (enabled ? "Enabled" : "Off"), 444, y + 14);
+        p_canvas->drawString(feature.profile_row ?
+                             (enabled ? "Selected" : "Profile") :
+                             (!available ? "Unavailable" : (enabled ? "Enabled" : "Off")),
+                             444, y + 14);
         p_canvas->setTextDatum(TextDatum::TopLeft);
     }
 
@@ -1734,6 +1961,7 @@ void screens_render(BuildingState& state, int fps) {
         case SCREEN_DASHBOARD_MAPPING: render_dashboard_mapping(state); break;
         case SCREEN_MAPPING_SOURCE: render_mapping_source(state); break;
         case SCREEN_TEMP_DETAIL: render_temperature_detail(state); break;
+        case SCREEN_DEVICE_INFO: render_device_info(state); break;
         case SCREEN_KEYBOARD:    keyboard_draw();              break;
         default: break;
     }
@@ -1772,14 +2000,28 @@ void handle_dashboard_touch_legacy(BuildingState& state, int tx, int ty) {
     }
 
     if (state.dashboard_page == 0) {
+        bool send_ac = false;
+        bool send_projector = false;
+        bool send_light = false;
+        bool ac_power = false;
+        float ac_target = 0.0f;
+        bool projector_power = false;
+        bool light_power = false;
         data_lock(state);
-        if      (isHit(tx, ty, 20, 145, 95, 55))  { state.sensor.temp_target = min(30.0f, state.sensor.temp_target + 0.5f); }
-        else if (isHit(tx, ty, 125, 145, 95, 55)) { state.sensor.temp_target = max(16.0f, state.sensor.temp_target - 0.5f); }
-        else if (isHit(tx, ty, 20, 210, 200, 50)) { state.sensor.ac_on        = !state.sensor.ac_on; }
-        else if (isHit(tx, ty, 240, 203, 110, 47)){ state.sensor.projector_on = !state.sensor.projector_on; }
-        else if (isHit(tx, ty, 362, 203, 110, 47)){ state.sensor.light_on     = !state.sensor.light_on; }
+        if      (isHit(tx, ty, 20, 145, 95, 55))  { state.sensor.temp_target = min(30.0f, state.sensor.temp_target + 0.5f); send_ac = true; }
+        else if (isHit(tx, ty, 125, 145, 95, 55)) { state.sensor.temp_target = max(16.0f, state.sensor.temp_target - 0.5f); send_ac = true; }
+        else if (isHit(tx, ty, 20, 210, 200, 50)) { state.sensor.ac_on        = !state.sensor.ac_on; send_ac = true; }
+        else if (isHit(tx, ty, 240, 203, 110, 47)){ state.sensor.projector_on = !state.sensor.projector_on; send_projector = true; }
+        else if (isHit(tx, ty, 362, 203, 110, 47)){ state.sensor.light_on     = !state.sensor.light_on; send_light = true; }
+        ac_power = state.sensor.ac_on;
+        ac_target = state.sensor.temp_target;
+        projector_power = state.sensor.projector_on;
+        light_power = state.sensor.light_on;
         state.ui_needs_update = true;
         data_unlock(state);
+        if (send_ac) rs485_request_ac_command(ac_power, ac_target);
+        if (send_projector) rs485_request_projector_command(projector_power);
+        if (send_light) rs485_request_light_command(light_power);
     }
 }
 
@@ -1864,39 +2106,55 @@ void handle_dashboard_touch(BuildingState& state, int tx, int ty) {
         UiRect down_rect = {ac_rect.x + 20 + btn_w, btn_y, btn_w, 34};
 
         if (hit_rect(tx, ty, power_rect)) {
+            bool ac_power = false;
+            float ac_target = 0.0f;
             data_lock(state);
             state.sensor.ac_on = !state.sensor.ac_on;
+            ac_power = state.sensor.ac_on;
+            ac_target = state.sensor.temp_target;
             state.ui_needs_update = true;
             data_unlock(state);
+            rs485_request_ac_command(ac_power, ac_target);
             return;
         }
 
         if (hit_rect(tx, ty, up_rect) || hit_rect(tx, ty, down_rect)) {
+            bool ac_power = false;
+            float ac_target = 0.0f;
             data_lock(state);
             if (hit_rect(tx, ty, up_rect)) {
                 state.sensor.temp_target = min(30.0f, state.sensor.temp_target + 0.5f);
             } else {
                 state.sensor.temp_target = max(16.0f, state.sensor.temp_target - 0.5f);
             }
+            ac_power = state.sensor.ac_on;
+            ac_target = state.sensor.temp_target;
             state.ui_needs_update = true;
             data_unlock(state);
+            rs485_request_ac_command(ac_power, ac_target);
             return;
         }
     }
 
     if (projector_rect.w > 0 && hit_rect(tx, ty, projector_rect)) {
+        bool projector_power = false;
         data_lock(state);
         state.sensor.projector_on = !state.sensor.projector_on;
+        projector_power = state.sensor.projector_on;
         state.ui_needs_update = true;
         data_unlock(state);
+        rs485_request_projector_command(projector_power);
         return;
     }
 
     if (led_rect.w > 0 && hit_rect(tx, ty, led_rect)) {
+        bool light_power = false;
         data_lock(state);
         state.sensor.light_on = !state.sensor.light_on;
+        light_power = state.sensor.light_on;
         state.ui_needs_update = true;
         data_unlock(state);
+        rs485_request_light_command(light_power);
         return;
     }
 }
@@ -1959,8 +2217,8 @@ void handle_settings_touch(BuildingState& state, int tx, int ty) {
     Serial.printf("[TOUCH] Settings tx:%d ty:%d\n", tx, ty);
 
     if      (isHit(tx, ty, 338, 8, 122, 38)) { screens_set(SCREEN_DASHBOARD); }
-    else if (isHit(tx, ty, 20, 126, 136, 92)) { screens_set(SCREEN_WIFI_CONFIG); }
-    else if (isHit(tx, ty, 172, 126, 136, 92)) { 
+    else if (settings_page == 0 && isHit(tx, ty, 20, 126, 136, 92)) { screens_set(SCREEN_WIFI_CONFIG); }
+    else if (settings_page == 0 && isHit(tx, ty, 172, 126, 136, 92)) {
         data_lock(state);
         lan_dhcp = state.net.lan_use_dhcp;
         strncpy(temp_lan_ip, state.net.lan_static_ip, 15);
@@ -1970,13 +2228,45 @@ void handle_settings_touch(BuildingState& state, int tx, int ty) {
         data_unlock(state);
         screens_set(SCREEN_LAN_CONFIG); 
     }
-    else if (isHit(tx, ty, 324, 126, 136, 92)) { screens_set(SCREEN_SLAVE_MANAGER); }
-    else if (isHit(tx, ty, 20, 58, 440, 48)) {
+    else if (settings_page == 0 && isHit(tx, ty, 324, 126, 136, 92)) { screens_set(SCREEN_SLAVE_MANAGER); }
+    else if (settings_page == 0 && isHit(tx, ty, 338, 238, 122, 54)) {
+        settings_page = 1;
+        data_lock(state);
+        state.ui_needs_update = true;
+        data_unlock(state);
+    }
+    else if (settings_page == 1 && isHit(tx, ty, 20, 238, 122, 54)) {
+        settings_page = 0;
+        data_lock(state);
+        state.ui_needs_update = true;
+        data_unlock(state);
+    }
+    else if (settings_page == 1 && isHit(tx, ty, 250, 74, 210, 100)) { screens_set(SCREEN_DEVICE_INFO); }
+    else if (settings_page == 0 && isHit(tx, ty, 20, 58, 440, 48)) {
         data_lock(state);
         state.net.net_priority = (state.net.net_priority == 0) ? 1 : 0;
         state.ui_needs_update = true;
         data_unlock(state);
         if (ui_callbacks.onPriorityChange) ui_callbacks.onPriorityChange(state.net.net_priority);
+    }
+}
+
+void handle_device_info_touch(BuildingState& state, int tx, int ty) {
+    if (isHit(tx, ty, 338, 8, 122, 38)) {
+        screens_set(SCREEN_SETTINGS);
+        return;
+    }
+    if (isHit(tx, ty, 20, 58, 440, 48)) {
+        editing_target = 8;
+        keyboard_set_text(state.net.device_name);
+        screens_set(SCREEN_KEYBOARD);
+        return;
+    }
+    if (isHit(tx, ty, 20, 118, 210, 54)) {
+        editing_target = 9;
+        keyboard_set_text(state.net.class_name);
+        screens_set(SCREEN_KEYBOARD);
+        return;
     }
 }
 
@@ -2332,12 +2622,14 @@ void handle_slave_detail_touch(BuildingState& state, int tx, int ty) {
         RS485SlaveState& slave = state.rs485.slaves[target_index];
         bool available = slave_feature_available(slave, feature);
         bool enabled = slave_feature_enabled(slave, feature);
-        if (feature.capability == RS485_CAP_TEMP && !enabled &&
+        if (!feature.profile_row && feature.capability == RS485_CAP_TEMP && !enabled &&
             temp_channel_enabled_by_other_slave(state.rs485, target_index, feature.channel)) {
             available = false;
         }
         if (available) {
-            if (feature.capability == RS485_CAP_TEMP) {
+            if (feature.profile_row) {
+                slave_apply_profile_policy(slave, feature.profile, true);
+            } else if (feature.capability == RS485_CAP_TEMP) {
                 slave_mark_feature_assignable(slave, feature);
                 slave.enabled_mask |= RS485_CAP_TEMP;
                 bool next_enabled = !(slave.temp_enabled_mask & (1 << feature.channel));
@@ -2520,10 +2812,31 @@ void handle_keyboard_touch(BuildingState& state, int tx, int ty) {
             data_unlock(state);
             data_save_rs485_config(state);
         }
+        else if (editing_target == 8) {
+            data_lock(state);
+            strncpy(state.net.device_name, keyboard_get_text(), sizeof(state.net.device_name) - 1);
+            state.net.device_name[sizeof(state.net.device_name) - 1] = '\0';
+            state.ui_needs_update = true;
+            data_unlock(state);
+            data_save_device_config(state);
+        }
+        else if (editing_target == 9) {
+            data_lock(state);
+            strncpy(state.net.class_name, keyboard_get_text(), sizeof(state.net.class_name) - 1);
+            state.net.class_name[sizeof(state.net.class_name) - 1] = '\0';
+            if (state.net.class_name[0] == '\0') {
+                strncpy(state.net.class_name, "HD01", sizeof(state.net.class_name) - 1);
+                state.net.class_name[sizeof(state.net.class_name) - 1] = '\0';
+            }
+            state.ui_needs_update = true;
+            data_unlock(state);
+            data_save_device_config(state);
+        }
         
         screens_set((editing_target == 1 || editing_target == 2) ? SCREEN_WIFI_CONFIG : 
                     (editing_target >= 3 && editing_target <= 6) ? SCREEN_LAN_CONFIG :
-                    (editing_target == 7) ? SCREEN_SLAVE_DETAIL : SCREEN_SETTINGS);
+                    (editing_target == 7) ? SCREEN_SLAVE_DETAIL :
+                    (editing_target == 8 || editing_target == 9) ? SCREEN_DEVICE_INFO : SCREEN_SETTINGS);
         editing_target = 0;
         return;
     }
@@ -2532,7 +2845,8 @@ void handle_keyboard_touch(BuildingState& state, int tx, int ty) {
     if (isHit(tx, ty, 250, kY_row4, 80, 45)) {
         screens_set((editing_target == 1 || editing_target == 2) ? SCREEN_WIFI_CONFIG : 
                     (editing_target >= 3 && editing_target <= 6) ? SCREEN_LAN_CONFIG :
-                    (editing_target == 7) ? SCREEN_SLAVE_DETAIL : SCREEN_SETTINGS);
+                    (editing_target == 7) ? SCREEN_SLAVE_DETAIL :
+                    (editing_target == 8 || editing_target == 9) ? SCREEN_DEVICE_INFO : SCREEN_SETTINGS);
         editing_target = 0;
         return;
     }
@@ -2553,6 +2867,7 @@ void screens_handle_touch(BuildingState& state, int tx, int ty) {
         case SCREEN_DASHBOARD_MAPPING: handle_dashboard_mapping_touch(state, tx, ty); break;
         case SCREEN_MAPPING_SOURCE: handle_mapping_source_touch(state, tx, ty); break;
         case SCREEN_TEMP_DETAIL: handle_temperature_detail_touch(state, tx, ty); break;
+        case SCREEN_DEVICE_INFO: handle_device_info_touch(state, tx, ty); break;
         case SCREEN_KEYBOARD:    handle_keyboard_touch(state, tx, ty);    break;
         default: break;
     }

@@ -10,17 +10,17 @@ Smart Building Master S3 + Distributed Slave Network
 Dokumen ini mendefinisikan arsitektur komunikasi RS485 terbaru menggunakan:
 
 - Modbus RTU via DFRobot_RTU Library
-- Slave wire contract V_1_4_0: `docs/From_SLave/RS485_Modbus_Slave_Firmware_Contract_V_1_4_0.md`
+- Slave wire contract v2.1.0: `docs/From_SLave/RS485_Modbus_Slave_Firmware_Contract v2.md`
 
 Dokumen ini mencakup:
 - RS485 transport architecture
 - Modbus register philosophy
-- Capability-driven slave model
+- Firmware V2.1 slave model: master-owned Device Profile enforcement
 - Master-orchestrated runtime behavior
 - Discovery & pairing flow
 - Slave identity system
 - Runtime role assignment
-- Single-sensor & multi-sensor compatibility
+- Saved-slave reconnect startup flow
 - Dashboard integration model
 - Control routing
 - Reliability philosophy
@@ -28,9 +28,12 @@ Dokumen ini mencakup:
 
 Tujuan utama:
 
-Membuat sistem slave fleksibel, scalable, mudah diremix, dan tetap kompatibel dengan:
-- 1 slave 1 sensor
-- multi-sensor slave
+Membuat sistem slave fleksibel, scalable, mudah diremix, dan tetap kompatibel dengan Firmware V2.1:
+- saved slave reconnect on startup
+- Device Profile enforcement in the master
+- optional Lux through v2.1 registers
+- `IR_COMBO_NODE` support for AC 1, AC 2, and Projector
+- v2.1 register compatibility without reviving V1 bundled capability assumptions
 
 ---
 
@@ -51,6 +54,12 @@ Master menentukan:
 - control purpose
 - runtime behavior
 - active feature
+
+Firmware V2 alignment:
+
+- What changed: the master owns Device Profile policy and the slave remains policy-blind.
+- Why it changed: production hardware needs explicit profiles such as `IR_COMBO_NODE`, while slaves should stay simple.
+- Implementation effect: Slave Detail selects a profile, master persists that profile, and master writes only the v2.1 registers allowed by that profile.
 
 ---
 
@@ -73,19 +82,39 @@ Master memiliki seluruh orchestration logic.
 
 # 3. Supported Slave Model
 
-Mode A:
-1 Slave = 1 Sensor Type
+Firmware V2.1 primary model:
 
-Contoh:
-Slave A:
-TEMP only
+```text
+Master-owned Device Profile + policy-blind slave registers
+```
 
-Mode B:
-1 Slave = Multiple Capability
+Initial Device Profiles:
 
-Contoh:
-Slave B:
-TEMP + CO2 + PIR + IR
+- `TEMP_NODE`: Temperature sensors + optional Lux.
+- `CO2_NODE`: CO2 sensors + optional Lux.
+- `PRESENCE_NODE`: Human Presence sensors + optional Lux.
+- `RELAY_NODE`: Relay/LED control + optional Lux.
+- `IR_COMBO_NODE`: IR AC 1 + IR AC 2 + IR Projector + optional Lux.
+
+Device Profile rules:
+
+- Device Profile is stored in the master registry.
+- Slave does not need a profile register.
+- Slave does not decide which profile combinations are valid.
+- Master writes v2.1 assignment registers based on selected profile.
+- `IR_COMBO_NODE` is intentionally allowed for production cost, PCB count, and installation simplicity.
+
+Temperature note:
+
+Temperature can still expose up to four DHT22 channels through `TEMP_SENSOR_ASSIGNMENT` bits. This is still one Temperature profile, not four different profiles.
+
+Legacy / V1 Notes:
+
+Previous architecture drafts allowed `1 slave = multiple capabilities`, for example `TEMP + CO2 + PIR + IR`. That assumption is deprecated for Firmware V2. It remains useful as historical context only and SHALL NOT be treated as the primary implementation target.
+
+What changed: v2.1 replaces the generic one-main-type rule with explicit Device Profiles.
+Why it changed: Firmware V2.1 needs clear master-owned policy while allowing production exceptions such as `IR_COMBO_NODE`.
+Implementation effect: UI and master validation should use profile rows, not raw multi-checkbox main-type policy.
 
 ---
 
@@ -193,11 +222,23 @@ Recommended:
 247 = Pairing/default address
 248-254 = Reserved/testing
 
-Per the agreed slave contract V_1_4_0, all slaves boot at address 247 because slave config is RAM-only. The master owns persistent MAC to assigned-address mapping and restores known slaves after reboot.
+Per the agreed slave contract v2.1.0, all slaves boot at address 247 because slave config is RAM-only. The master owns persistent MAC/address/profile/name/room registry data and restores known slaves after reboot.
 
 ---
 
 # 8. Pairing Flow
+
+Startup reconnect flow:
+
+1. START.
+2. Master checks saved slave registry.
+3. If saved slave exists, master tries reconnect/recovery.
+4. If no saved slave exists, master does nothing automatically.
+5. User starts DISCOVER only when a new/unknown slave must be assigned.
+
+What changed: boot does not automatically imply fresh assignment.
+Why it changed: saved MAC/address mappings are authoritative.
+Implementation effect: pairing is a user-driven operation for unknown devices, while normal startup restores known slaves first.
 
 1. User taps DISCOVER
 2. Master pauses polling
@@ -205,36 +246,41 @@ Per the agreed slave contract V_1_4_0, all slaves boot at address 247 because sl
 4. Master scans pairing/default address 247
 5. Slave is already listening on address 247 after boot
 6. Master reads identity registers
-7. Master reads capability count registers
-8. UI shows MAC/identity + capability counts
-9. User assigns address
-10. Master writes capability count registers to `0x0011..0x0016`
-11. Master writes new address to `NODE_ADDRESS 0x00F0`
+7. Master reads MAC and firmware metadata
+8. UI shows MAC/identity and marks unknown MAC as `UNPAIRED_DEVICE_DETECTED`
+9. User assigns address/name/room and selects Device Profile
+10. Master writes capability/profile registers to `0x0010..0x0017`
+11. Master writes new address to `NODE_ADDRESS 0x0000`
 12. Slave applies address immediately and leaves address 247
-13. Master stores MAC -> assigned address mapping
+13. Master stores MAC, assigned address, Device Profile, device name, and room
 14. Polling resumes on the assigned address
 
-SAVE_CONFIG at `0x00F1` remains an optional compatibility/config signal. Slave contract V_1_4_0 SHALL NOT rely on local EEPROM persistence for address or capability; master persistence is authoritative.
+The slave-side save-config signal is removed from the v2.1 slave contract. Slave address and capability persistence belong to the master; slave remains RAM-only.
 
 Recovery flow after slave reboot:
 
 1. Slave reboots and returns to address 247
-2. Master reads identity/MAC at address 247
-3. Master looks up saved MAC -> assigned address
-4. Master writes recovery MAC to `0x00F6..0x00F8`
-5. Master writes recovered address to `0x00F9`
-6. Matching slave applies the recovered address
-7. Non-matching slaves ignore the recovery write and remain at 247
+2. Master has saved MAC -> assigned address from registry
+3. Known assigned address does not respond
+4. Master writes recovery MAC/address to `247:0x00F4 length 4`
+5. Matching slave applies the recovered address
+6. Non-matching slaves ignore the recovery write and remain at 247
+7. Master ignores Modbus response collision/error for this recovery write only
+8. Master confirms recovery by polling the recovered assigned address
+
+What changed: recovery is the normal path for known RAM-only slaves after reboot.
+Why it changed: slaves boot at 247 but master-owned registry remembers their assigned identity.
+Implementation effect: master should not wipe or reassign known slaves unless recovery fails or the user intentionally re-pairs them.
 
 ---
 
 # 9. Slave Identity Registers
 
-0x0000 DEVICE_MAGIC
-0x0005 FW_VERSION
-0x0006 MAC_0_1
-0x0007 MAC_2_3
-0x0008 MAC_4_5
+0x0000 NODE_ADDRESS
+0x0001 FW_VERSION
+0x0002 MAC_0_1
+0x0003 MAC_2_3
+0x0004 MAC_4_5
 
 MAC registers are the stable identity source used by pairing and recovery. Master firmware may derive an internal UID from MAC for registry persistence.
 
@@ -242,31 +288,39 @@ MAC registers are the stable identity source used by pairing and recovery. Maste
 
 # 10. Capability Registers
 
-0x0011 TEMP_SENSOR_COUNT
+0x0010 TEMP_SENSOR_ASSIGNMENT
+0x0011 LUX_SENSOR_ASSIGNMENT
 0x0012 CO2_SENSOR_COUNT
-0x0013 PRESENCE_SENSOR_COUNT
-0x0014 RELAY_COUNT
-0x0015 IR_COUNT
-0x0016 LCD_CTRL_COUNT
+0x0013 PRESENCE_SENSOR_ASSIGNMENT
+0x0014 RELAY_ASSIGNMENT
+0x0015 IR_PROJECTOR_ENABLE
+0x0016 IR_AC_1_ENABLE
+0x0017 IR_AC_2_ENABLE
 
-Register `0x0010` is deprecated by the agreed slave contract and SHALL NOT be used as an active capability mask. Capability is determined from counts greater than zero. In the current master UI, the Slave Detail checklist is the owner of enabled state. Reading these registers from a slave is useful for sync/diagnostics, but it SHALL NOT override the master's checked/unchecked state after the user has configured it.
+Capability/profile registers are written by master according to the selected Device Profile. Reading these registers from a slave is useful for sync/diagnostics, but it SHALL NOT override the master's profile assignment after the user has configured it.
 
-When the user presses SAVE in Slave Detail, the master writes the current capability counts to `0x0011..0x0016`. For temperature:
+When the user presses SAVE in Slave Detail, the master writes the current profile/config to `0x0010..0x0017`. For temperature:
 
 ```text
-TEMP_SENSOR_COUNT = 1 -> Temp 1 active
-TEMP_SENSOR_COUNT = 2 -> Temp 1-2 active
-TEMP_SENSOR_COUNT = 3 -> Temp 1-3 active
-TEMP_SENSOR_COUNT = 4 -> Temp 1-4 active
+TEMP_SENSOR_ASSIGNMENT bit 3 -> Temp 1 active
+TEMP_SENSOR_ASSIGNMENT bit 2 -> Temp 2 active
+TEMP_SENSOR_ASSIGNMENT bit 1 -> Temp 3 active
+TEMP_SENSOR_ASSIGNMENT bit 0 -> Temp 4 active
 ```
 
-The master then may write `0x00F1 = 0xA55A` as a compatibility SAVE_CONFIG signal.
+The master SHALL NOT write a slave-side save-config signal in v2.1.
+
+Firmware V2.1 assignment validation:
+
+- What changed: capability assignment registers are the v2.1 wire format, while Device Profile is master-owned policy.
+- Why it changed: v2.1 needs policy-blind slaves and production-oriented profiles.
+- Implementation effect: master validates profile choices and writes matching v2.1 registers. `IR_COMBO_NODE` may enable AC 1, AC 2, and Projector together.
 
 ---
 
 # 11. Capability Bitmask
 
-This bitmask is an internal master/UI convenience model, not the V_1_4_0 wire contract.
+This bitmask is an internal master/UI convenience model, not the v2.1 wire contract.
 
 enum CapabilityBit {
     CAP_TEMP
@@ -275,18 +329,19 @@ enum CapabilityBit {
     CAP_AC_IR
     CAP_PROJECTOR_IR
     CAP_LIGHT_RELAY
-    CAP_LUX          // master-side/future extension; not required by slave contract V_1_4_0
+    CAP_LUX
     CAP_LCD_CTRL
 }
 
 ---
 
-# 12. Single Sensor Slave Example
+# 12. Device Profile Example
 
-Slave A assigned by master:
+TEMP_NODE assigned by master:
 
 ```text
-0x0011 TEMP_SENSOR_COUNT = 1
+0x0010 TEMP_SENSOR_ASSIGNMENT = 0b1000
+0x0011 LUX_SENSOR_ASSIGNMENT  = 0b0000
 ```
 
 Runtime register:
@@ -297,14 +352,13 @@ Runtime register:
 
 ---
 
-# 13. Multi Sensor Slave Example
+# 13. Legacy / V1 Multi Sensor Slave Example
 
 Slave B assigned by master:
 
 ```text
-0x0011 TEMP_SENSOR_COUNT     = 2
-0x0012 CO2_SENSOR_COUNT      = 1
-0x0013 PRESENCE_SENSOR_COUNT = 1
+Legacy V1-style bundle:
+Temperature + CO2 + Presence
 ```
 
 Runtime registers:
@@ -312,9 +366,15 @@ Runtime registers:
 ```text
 0x0100 TEMP_1_X10
 0x0101 TEMP_2_X10
-0x0110 CO2_PPM
-0x0120 PRESENCE_STATE
+legacy grouped CO2 register
+legacy grouped presence register
 ```
+
+Firmware V2 status:
+
+- What changed: this example is no longer a valid primary V2.1 assignment.
+- Why it changed: V2.1 uses Device Profiles and the v2.1 register map.
+- Implementation effect: keep this only for understanding old documents or test fixtures. New V2.1 configs should use Device Profiles, including `IR_COMBO_NODE` where production hardware needs a combined IR node.
 
 ---
 
@@ -371,7 +431,7 @@ Current firmware alignment:
 Implemented through DashboardModel:
 - Temperature slots
 - CO2
-- Lux, only when provided by an implementation-specific or future slave contract extension
+- Lux from v2.1 registers when the selected profile enables it
 - Human Presence
 - AC availability
 - Projector availability
@@ -430,6 +490,12 @@ LCD_CONTROL
 
 Therefore, LED/Light Relay dashboard visibility currently comes from enabled online slave capability, not from a persisted logical mapping slot.
 
+Firmware V2 mapping effect:
+
+- What changed: each slave source is interpreted through master-owned Device Profile policy.
+- Why it changed: MQTT V2 publishes per sensor type and needs clean source ownership.
+- Implementation effect: auto-map should use the selected Device Profile. `IR_COMBO_NODE` may fill AC and Projector control roles; temperature profile may expose up to four temperature channels.
+
 ---
 
 # 19. NULL / Offline Behavior
@@ -453,25 +519,29 @@ mapping restored automatically
 0x0102 TEMP_3_X10
 0x0103 TEMP_4_X10
 
+Lux:
+0x0104 LUX_1_LX
+0x0105 LUX_2_LX
+0x0106 LUX_3_LX
+0x0107 LUX_4_LX
+
 Air Quality:
-0x0110 CO2_PPM
-0x0112 HUMIDITY_X10
+0x0108 CO2_PPM
 
 Presence:
-0x0120 PRESENCE_STATE
-0x0121 PRESENCE_CONF
+0x0109 PRESENCE_1_STATE
+0x010A PRESENCE_2_STATE
+0x010B PRESENCE_3_STATE
+0x010C PRESENCE_4_STATE
 
 Relay:
-0x0130 RELAY_1_STATE
-0x0131 RELAY_2_STATE
+0x010D RELAY_1_STATE
+0x010E RELAY_2_STATE
 
-Master polling SHOULD read the register groups defined by the slave contract instead of assuming one contiguous runtime block:
+Master polling SHOULD read the contiguous v2.1 runtime block and parse values using Device Profile and assignment registers:
 
 ```text
-Temperature: read 0x0100 length 4 when TEMP_SENSOR_COUNT > 0
-Air quality: read 0x0110 length 3 when CO2_SENSOR_COUNT > 0
-Presence:    read 0x0120 length 2 when PRESENCE_SENSOR_COUNT > 0
-Relay:       read/write 0x0130..0x0131 when RELAY_COUNT > 0
+Sensor/state block: read 0x0100 length 15
 ```
 
 Invalid/unavailable values SHALL follow the sentinel values from the slave contract.
@@ -481,35 +551,44 @@ Invalid/unavailable values SHALL follow the sentinel values from the slave contr
 # 21. Control Register Layout
 
 AC:
-0x0200 AC1_POWER
-0x0201 AC1_SET_TEMP
-0x0202 AC1_MODE
-0x0203 AC2_POWER
-0x0204 AC2_SET_TEMP
-0x0205 AC2_MODE
+0x0200 AC_1_POWER
+0x0201 AC_1_SET_TEMP
+0x0202 AC_1_MODE
+0x0203 AC_2_POWER
+0x0204 AC_2_SET_TEMP
+0x0205 AC_2_MODE
+0x0206 AC_1_COMMAND_STATUS
+0x0207 AC_2_COMMAND_STATUS
 
 Projector:
 0x0210 PROJECTOR_POWER
 0x0211 PROJECTOR_INPUT
+0x0212 PROJECTOR_COMMAND_STATUS
 
 Current firmware control implementation status:
 
 ```text
-Implemented active write path:
-- RS485_CMD_SET_OUTPUT -> write single holding register 0x0130 RELAY_1_STATE
+Implemented/target active write paths SHALL route through RS485 Manager and the v2.1 register map:
+- Relay writes use 0x010D..0x010E.
+- AC writes use 0x0200..0x0205 when IR_COMBO_NODE is assigned.
+- Projector writes use 0x0210..0x0211 when IR_COMBO_NODE is assigned.
 
-Target / not yet fully implemented as active command paths:
-- 0x0200 AC1_POWER
-- 0x0201 AC1_SET_TEMP
-- 0x0202 AC1_MODE
-- 0x0203 AC2_POWER
-- 0x0204 AC2_SET_TEMP
-- 0x0205 AC2_MODE
-- 0x0210 PROJECTOR_POWER
-- 0x0211 PROJECTOR_INPUT
+Command status read paths:
+- 0x0206 AC_1_COMMAND_STATUS
+- 0x0207 AC_2_COMMAND_STATUS
+- 0x0212 PROJECTOR_COMMAND_STATUS
 ```
 
-Until dedicated AC/Projector command routing is implemented, these `0x0200+` registers SHALL be treated as target contract registers, not as already-wired master command paths.
+Temporary AC dashboard behavior:
+
+- The dashboard/control panel shows one AC control for now.
+- If AC 1 and AC 2 are both exposed by `IR_COMBO_NODE`, master mirrors the same power/set-temperature/mode command to AC 1 and AC 2.
+- Separate AC 1 / AC 2 controls are a future UI update.
+
+Command status note:
+
+- AC/projector command status means command execution result only.
+- It does not prove the physical AC/projector state because IR is one-way.
 
 ---
 
@@ -551,15 +630,17 @@ Offline fail threshold:           5 consecutive failures
 
 Slave SHOULD:
 - expose raw sensor data
-- expose capability count registers required by `docs/From_SLave/RS485_Modbus_Slave_Firmware_Contract_V_1_4_0.md`
+- expose v2.1 capability/profile registers required by `docs/From_SLave/RS485_Modbus_Slave_Firmware_Contract v2.md`
 - respond to Modbus request
 - avoid orchestration logic
+- remain RAM-only and policy-blind
 
 Slave SHOULD NOT:
 - decide dashboard slot
 - decide room assignment
 - decide AC purpose
 - decide projector purpose
+- decide Device Profile
 
 ---
 
@@ -582,8 +663,8 @@ Master SHALL own:
 2. Dashboard SHALL use logical slot only.
 3. Slave SHALL expose capability, not final role.
 4. Master SHALL assign runtime purpose.
-5. Single-sensor slave SHALL be supported.
-6. Multi-sensor slave SHALL be supported.
+5. Firmware V2.1 Device Profile assignment SHALL be supported.
+6. Legacy bundled multi-capability assumptions SHALL NOT be the primary design target.
 7. Dynamic dashboard widget visibility SHALL be supported.
 8. AVG temperature SHALL be primary dashboard temperature.
 9. Detailed temperature SHALL exist on detail page.
@@ -592,6 +673,8 @@ Master SHALL own:
 12. Runtime sensor data SHALL flow from RS485 Manager into Slave Registry, then Mapping Manager, then Dashboard Model.
 13. Any capability shown on the main dashboard SHOULD eventually be represented by a logical mapping slot. Current exception: Light Relay / LED is still registry-derived.
 14. Compatibility structs/commands in firmware SHALL be treated as API/debug wrappers around Modbus operations, not a separate active wire protocol.
+15. Lux SHALL use v2.1 assignment/runtime registers when enabled by the selected Device Profile.
+16. `IR_COMBO_NODE` SHALL support AC 1, AC 2, and Projector through one IR-capable slave.
 
 ---
 
