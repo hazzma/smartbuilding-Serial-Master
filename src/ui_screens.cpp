@@ -651,69 +651,42 @@ void render_settings(BuildingState& state) {
 
     } else {
         // --- PAGE 2 ---
-        // MQTT Broker Card (Clickable)
-        drawCardBase(20, 58, 440, 62, COLOR_CARD_BG);
+        struct SettingsItem {
+            const char* title;
+            const char* subtitle;
+            uint16_t accent;
+        };
+
+        SettingsItem items[2] = {
+            {"MQTT Setup", state.net.mqtt_ok ? "Broker Connected" : "MQTT Setup", (uint16_t)(state.net.mqtt_ok ? COLOR_STAT_ON : COLOR_STAT_WARN)},
+            {"Device Info", "Name / Class Room", COLOR_STAT_ON}
+        };
+
+        const int row_y[2] = {72, 146};
+        for (int i = 0; i < 2; i++) {
+            drawCardBase(20, row_y[i], 440, 62, COLOR_CARD_BG);
+            p_canvas->fillRoundRect(34, row_y[i] + 10, 6, 42, 3, items[i].accent);
+
+            p_canvas->setTextDatum(TextDatum::MiddleLeft);
+            p_canvas->setTextFont(4);
+            p_canvas->setTextColor(COLOR_TEXT_MAIN);
+            p_canvas->drawString(items[i].title, 52, row_y[i] + 31);
+
+            p_canvas->setTextDatum(TextDatum::MiddleRight);
+            p_canvas->setTextFont(2);
+            p_canvas->setTextColor(COLOR_TEXT_SEC);
+            p_canvas->drawString(items[i].subtitle, 430, row_y[i] + 31);
+        }
+
+        drawCardBase(20, 226, 440, 54, COLOR_CARD_BG);
         p_canvas->setTextDatum(TextDatum::MiddleLeft);
         p_canvas->setTextFont(2);
         p_canvas->setTextColor(COLOR_TEXT_SEC);
-        p_canvas->drawString("MQTT Broker (Tap to edit)", 38, 76);
-        p_canvas->setTextFont(4);
-        p_canvas->setTextColor(COLOR_TEXT_MAIN);
-        p_canvas->drawString(state.net.mqtt_server[0] ? state.net.mqtt_server : "your-broker.example.com", 38, 98);
-        
+        p_canvas->drawString("Swipe right to return / Tap MQTT or Device Info", 38, 248);
+
         p_canvas->setTextDatum(TextDatum::MiddleRight);
-        p_canvas->setTextFont(2);
         p_canvas->setTextColor(state.net.mqtt_ok ? COLOR_STAT_ON : COLOR_STAT_WARN);
-        p_canvas->drawString(state.net.mqtt_ok ? "MQTT Connected" : "MQTT Offline", 442, 88);
-
-        // Device Name Card
-        drawCardBase(20, 130, 210, 54, COLOR_CARD_BG);
-        p_canvas->setTextDatum(TextDatum::MiddleLeft);
-        p_canvas->setTextFont(2);
-        p_canvas->setTextColor(COLOR_TEXT_SEC);
-        p_canvas->drawString("Device Name (Tap to edit)", 38, 148);
-        p_canvas->setTextFont(4);
-        p_canvas->setTextColor(COLOR_TEXT_MAIN);
-        p_canvas->drawString(state.net.device_name[0] ? state.net.device_name : "Meeting Room Master", 38, 168);
-
-        // Class Name Card
-        drawCardBase(250, 130, 210, 54, COLOR_CARD_BG);
-        p_canvas->setTextDatum(TextDatum::MiddleLeft);
-        p_canvas->setTextFont(2);
-        p_canvas->setTextColor(COLOR_TEXT_SEC);
-        p_canvas->drawString("Class Name (Tap to edit)", 268, 148);
-        p_canvas->setTextFont(4);
-        p_canvas->setTextColor(COLOR_TEXT_MAIN);
-        p_canvas->drawString(state.net.class_name[0] ? state.net.class_name : "HD01", 268, 168);
-
-        // Firmware Card
-        drawCardBase(20, 194, 210, 54, COLOR_CARD_BG);
-        p_canvas->setTextDatum(TextDatum::MiddleLeft);
-        p_canvas->setTextFont(2);
-        p_canvas->setTextColor(COLOR_TEXT_SEC);
-        p_canvas->drawString("Firmware Version", 38, 212);
-        p_canvas->setTextFont(4);
-        p_canvas->setTextColor(COLOR_TEXT_MAIN);
-        p_canvas->drawString("Firmware V2.1", 38, 232);
-
-        // Developer Info Card
-        drawCardBase(250, 194, 210, 54, COLOR_CARD_BG);
-        p_canvas->setTextDatum(TextDatum::MiddleLeft);
-        p_canvas->setTextFont(2);
-        p_canvas->setTextColor(COLOR_TEXT_SEC);
-        p_canvas->drawString("Attribution", 268, 212);
-        p_canvas->setTextFont(3);
-        p_canvas->setTextColor(COLOR_TEXT_MAIN);
-        p_canvas->drawString("Hansel Kay CE LAB", 268, 232);
-        
-        // Topic preview card
-        drawCardBase(20, 258, 440, 36, COLOR_CARD_BG);
-        p_canvas->setTextDatum(TextDatum::MiddleLeft);
-        p_canvas->setTextFont(2);
-        p_canvas->setTextColor(COLOR_TEXT_SEC);
-        char preview[64];
-        snprintf(preview, sizeof(preview), "Topic: Class %s suhu/co2/led/ac/master", state.net.class_name[0] ? state.net.class_name : "HD01");
-        p_canvas->drawString(preview, 38, 276);
+        p_canvas->drawString(state.net.mqtt_ok ? "MQTT OK" : "MQTT offline", 442, 248);
     }
 
     // Page Dots
@@ -2339,23 +2312,15 @@ void handle_settings_touch_event(BuildingState& state, int tx, int ty, TouchEven
                 }
             } else {
                 // PAGE 2 Items
-                // MQTT Broker: 20, 58, 440, 62
-                if (isHit(tx, ty, 20, 58, 440, 62)) {
+                // MQTT Setup: 20, 72, 440, 62
+                if (isHit(tx, ty, 20, 72, 440, 62)) {
                     editing_target = 10;
                     keyboard_set_text(state.net.mqtt_server);
                     screens_set(SCREEN_KEYBOARD);
                 }
-                // Device Name: 20, 130, 210, 54
-                else if (isHit(tx, ty, 20, 130, 210, 54)) {
-                    editing_target = 8;
-                    keyboard_set_text(state.net.device_name);
-                    screens_set(SCREEN_KEYBOARD);
-                }
-                // Class Name: 250, 130, 210, 54
-                else if (isHit(tx, ty, 250, 130, 210, 54)) {
-                    editing_target = 9;
-                    keyboard_set_text(state.net.class_name);
-                    screens_set(SCREEN_KEYBOARD);
+                // Device Info: 20, 146, 440, 62
+                else if (isHit(tx, ty, 20, 146, 440, 62)) {
+                    screens_set(SCREEN_DEVICE_INFO);
                 }
             }
         }

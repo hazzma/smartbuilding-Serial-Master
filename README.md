@@ -34,6 +34,19 @@ Implementation effect:
 - After an actuator command is confirmed by the target slave, the master republishes the related state topic so the app can synchronize.
 - Slave selection follows the v2.1 Device Profile model.
 
+## Patch Notes
+
+### V2.2
+
+- Keeps the WiFi scan stability fix from V2.1.
+- Simplifies Settings page 2 into the older row-based device settings layout.
+- Moves detailed device name and class room editing back into the Device Info screen.
+
+### V2.1
+
+- Fixes WiFi scan busy/start-failed conflicts during reconnect and scan flows.
+- Adds the horizontal two-page Settings layout with MQTT and device info controls.
+
 ## Hardware Overview
 
 | Part | Detail |
