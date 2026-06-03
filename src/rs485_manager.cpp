@@ -12,6 +12,8 @@ static DFRobot_RTU rs485_modbus(&rs485_serial, RS485_DIR_PIN);
 static uint8_t next_seq = 1;
 static uint32_t last_poll_ms = 0;
 static uint32_t last_pairing_scan_ms = 0;
+static uint32_t last_auto_recovery_ms[RS485_MAX_SLAVES] = {0};
+static uint8_t pairing_known_scan_index = 0;
 static uint8_t poll_index = 0;
 static bool debug_force_rx_result = false;
 static RS485RxResult debug_forced_rx_result = RS485_RX_TIMEOUT;
@@ -23,10 +25,12 @@ static const uint32_t RS485_RESPONSE_TIMEOUT_MS = 100;
 static const uint8_t RS485_RETRY_COUNT = 1;
 static const uint32_t RS485_POLL_INTERVAL_MS = 1000;
 static const uint32_t RS485_PAIRING_SCAN_INTERVAL_MS = 700;
+static const uint32_t RS485_PAIRING_KNOWN_SCAN_WINDOW_MS = 4000;
 static const uint32_t RS485_IDENTITY_SYNC_INTERVAL_MS = 10000;
 static const uint32_t RS485_CAPABILITY_SYNC_INTERVAL_MS = 5000;
 static const uint32_t RS485_OFFLINE_TIMEOUT_MS = 5000;
 static const uint32_t RS485_PAIRING_TIMEOUT_MS = 30000;
+static const uint32_t RS485_AUTO_RECOVERY_INTERVAL_MS = 10000;
 static const uint8_t RS485_DEGRADED_THRESHOLD = 3;
 static const uint8_t RS485_OFFLINE_FAIL_THRESHOLD = 5;
 static const uint8_t RS485_MODBUS_FC_READ_HOLDING = 0x03;
@@ -44,7 +48,7 @@ struct ModbusRequestPlan {
     const char* label;
 };
 
-static void rs485_poll_sensor_registers(uint8_t address);
+static bool rs485_poll_sensor_registers(uint8_t address);
 
 static const char* rs485_rx_result_name(RS485RxResult result) {
     switch (result) {
@@ -670,6 +674,87 @@ static bool rs485_recover_known_pairing_slave(const uint16_t* identity, uint8_t 
     return true;
 }
 
+static bool rs485_recover_saved_slave(uint64_t mac, uint8_t saved_address, const char* label) {
+    if (mac == 0 ||
+        saved_address < 2 ||
+        saved_address >= RS485_MODBUS_PAIRING_ADDR) {
+        return false;
+    }
+
+    uint16_t recovery[4] = {
+        (uint16_t)((((mac >> 40) & 0xFF) << 8) | ((mac >> 32) & 0xFF)),
+        (uint16_t)((((mac >> 24) & 0xFF) << 8) | ((mac >> 16) & 0xFF)),
+        (uint16_t)((((mac >> 8) & 0xFF) << 8) | (mac & 0xFF)),
+        saved_address
+    };
+
+    Serial.printf("[RS485] %s recovery mac=%012llX addr=0x%02X\n",
+                  label ? label : "Auto",
+                  (unsigned long long)mac,
+                  saved_address);
+    rs485_write_recovery_registers_ignore_response(recovery, 4);
+
+    uint16_t recovered_identity[RS485_MODBUS_IDENTITY_REGS] = {0};
+    bool confirmed = rs485_read_holding_registers(saved_address,
+                                                  RS485_MODBUS_REG_NODE_ADDRESS,
+                                                  RS485_MODBUS_IDENTITY_REGS,
+                                                  recovered_identity,
+                                                  label ? label : "AUTO_RECOVERY_CONFIRM");
+    if (!confirmed || rs485_mac_from_identity_registers(recovered_identity, RS485_MODBUS_IDENTITY_REGS) != mac) {
+        Serial.printf("[RS485] %s recovery confirm failed mac=%012llX addr=0x%02X\n",
+                      label ? label : "Auto",
+                      (unsigned long long)mac,
+                      saved_address);
+        return false;
+    }
+
+    rs485_store_identity(saved_address, recovered_identity, RS485_MODBUS_IDENTITY_REGS);
+    rs485_mark_recovered_slave(mac, saved_address);
+    return true;
+}
+
+static void rs485_try_auto_recovery(uint8_t slave_index) {
+    uint64_t mac = 0;
+    uint8_t address = 0;
+    bool should_try = false;
+    uint32_t now = millis();
+
+    data_lock(g_state);
+    if (!g_state.rs485.pairing_active && slave_index < RS485_MAX_SLAVES) {
+        const RS485SlaveState& slave = g_state.rs485.slaves[slave_index];
+        bool valid_known_slave = slave.mac != 0 &&
+                                 slave.address >= 2 &&
+                                 slave.address < RS485_MODBUS_PAIRING_ADDR;
+        bool looks_lost = !slave.online ||
+                          slave.degraded ||
+                          slave.consecutive_fail >= RS485_DEGRADED_THRESHOLD ||
+                          (slave.last_seen == 0 || now - slave.last_seen > RS485_OFFLINE_TIMEOUT_MS);
+        bool interval_ok = last_auto_recovery_ms[slave_index] == 0 ||
+                           now - last_auto_recovery_ms[slave_index] >= RS485_AUTO_RECOVERY_INTERVAL_MS;
+        should_try = valid_known_slave && looks_lost && interval_ok;
+        if (should_try) {
+            mac = slave.mac;
+            address = slave.address;
+            last_auto_recovery_ms[slave_index] = now;
+            snprintf(g_state.rs485.status, sizeof(g_state.rs485.status),
+                     "RS485 recovery 0x%02X", address);
+            g_state.ui_needs_update = true;
+        }
+    }
+    data_unlock(g_state);
+
+    if (!should_try) return;
+
+    bool ok = rs485_recover_saved_slave(mac, address, "AUTO_RECOVERY");
+    data_lock(g_state);
+    if (!ok) {
+        snprintf(g_state.rs485.status, sizeof(g_state.rs485.status),
+                 "RS485 recovery failed 0x%02X", address);
+        g_state.ui_needs_update = true;
+    }
+    data_unlock(g_state);
+}
+
 static void rs485_store_assigned_candidate(uint8_t new_address) {
     data_lock(g_state);
     if (!g_state.rs485.pairing_candidate_ready || new_address == 0) {
@@ -945,6 +1030,62 @@ static bool rs485_scan_pairing_candidate() {
     Serial.printf("[RS485] Pairing candidate uid=0x%08lX cap=0x%04X\n",
                   (unsigned long)g_state.rs485.pairing_candidate.uid,
                   g_state.rs485.pairing_candidate.capability);
+    return true;
+}
+
+static bool rs485_scan_known_slave_during_pairing() {
+    uint8_t index = RS485_MAX_SLAVES;
+    uint8_t address = 0;
+    uint64_t expected_mac = 0;
+
+    data_lock(g_state);
+    uint8_t count = g_state.rs485.slave_count;
+    if (count > RS485_MAX_SLAVES) count = RS485_MAX_SLAVES;
+    for (uint8_t checked = 0; checked < count; checked++) {
+        uint8_t candidate_index = pairing_known_scan_index;
+        pairing_known_scan_index = (pairing_known_scan_index + 1) % (count == 0 ? 1 : count);
+        const RS485SlaveState& slave = g_state.rs485.slaves[candidate_index];
+        if (slave.uid == RS485_DUMMY_UI_UID) continue;
+        if (slave.mac == 0) continue;
+        if (slave.address < 2 || slave.address >= RS485_MODBUS_PAIRING_ADDR) continue;
+        index = candidate_index;
+        address = slave.address;
+        expected_mac = slave.mac;
+        break;
+    }
+    data_unlock(g_state);
+
+    if (index >= RS485_MAX_SLAVES || address == 0 || expected_mac == 0) return false;
+
+    uint16_t identity[RS485_MODBUS_IDENTITY_REGS] = {0};
+    bool identity_ok = rs485_read_holding_registers(address,
+                                                    RS485_MODBUS_REG_NODE_ADDRESS,
+                                                    RS485_MODBUS_IDENTITY_REGS,
+                                                    identity,
+                                                    "PAIR_KNOWN_IDENTITY");
+    if (!identity_ok) return false;
+
+    uint64_t actual_mac = rs485_mac_from_identity_registers(identity, RS485_MODBUS_IDENTITY_REGS);
+    if (actual_mac != expected_mac) {
+        Serial.printf("[RS485] Pair known MAC mismatch addr=0x%02X expected=%012llX actual=%012llX\n",
+                      address,
+                      (unsigned long long)expected_mac,
+                      (unsigned long long)actual_mac);
+        return false;
+    }
+
+    rs485_store_identity(address, identity, RS485_MODBUS_IDENTITY_REGS);
+    rs485_sync_capability_if_needed(address);
+
+    data_lock(g_state);
+    snprintf(g_state.rs485.status, sizeof(g_state.rs485.status),
+             "RS485 known alive 0x%02X", address);
+    g_state.ui_needs_update = true;
+    data_unlock(g_state);
+
+    Serial.printf("[RS485] Pairing confirmed known slave addr=0x%02X mac=%012llX\n",
+                  address,
+                  (unsigned long long)actual_mac);
     return true;
 }
 
@@ -1254,7 +1395,7 @@ static void rs485_update_sensor_from_modbus_payload(uint8_t address, const uint8
     data_unlock(g_state);
 }
 
-static void rs485_poll_sensor_registers(uint8_t address) {
+static bool rs485_poll_sensor_registers(uint8_t address) {
     uint16_t capability = 0;
     bool capability_synced = false;
 
@@ -1279,7 +1420,9 @@ static void rs485_poll_sensor_registers(uint8_t address) {
                                         capability,
                                         sensor_block,
                                         RS485_MODBUS_SENSOR_BLOCK_REGS);
+        return true;
     }
+    return false;
 }
 
 static void rs485_prepare_for_debug_force(uint8_t dst,
@@ -1551,6 +1694,7 @@ static void rs485_handle_pairing_request() {
         g_state.rs485.pairing_requested = false;
         g_state.rs485.pairing_active = true;
         g_state.rs485.pairing_started_ms = millis();
+        pairing_known_scan_index = 0;
         if (debug_pairing_timeout_override_ms > 0) {
             g_state.rs485.pairing_timeout_ms = debug_pairing_timeout_override_ms;
             debug_pairing_timeout_override_ms = 0;
@@ -1606,9 +1750,11 @@ static void rs485_handle_pairing_assign_request() {
 static void rs485_handle_pairing_scan() {
     bool active = false;
     bool candidate_ready = false;
+    uint32_t pairing_started_ms = 0;
     data_lock(g_state);
     active = g_state.rs485.pairing_active;
     candidate_ready = g_state.rs485.pairing_candidate_ready;
+    pairing_started_ms = g_state.rs485.pairing_started_ms;
     data_unlock(g_state);
 
     if (!active || candidate_ready) return;
@@ -1616,6 +1762,12 @@ static void rs485_handle_pairing_scan() {
     uint32_t now = millis();
     if (now - last_pairing_scan_ms < RS485_PAIRING_SCAN_INTERVAL_MS) return;
     last_pairing_scan_ms = now;
+
+    if (pairing_started_ms != 0 &&
+        now - pairing_started_ms < RS485_PAIRING_KNOWN_SCAN_WINDOW_MS &&
+        rs485_scan_known_slave_during_pairing()) {
+        return;
+    }
 
     rs485_scan_pairing_candidate();
 }
@@ -1969,6 +2121,7 @@ static void rs485_debug_serial_loop() {
 static void rs485_poll_one_slave() {
     bool poll_enabled = false;
     uint8_t slave_count = 0;
+    uint8_t slave_index = RS485_MAX_SLAVES;
     uint8_t address = 0;
     bool identity_due = false;
     bool capability_due = false;
@@ -1982,6 +2135,7 @@ static void rs485_poll_one_slave() {
         if (poll_index >= slave_count) poll_index = 0;
         RS485SlaveState& slave = g_state.rs485.slaves[poll_index];
         if (slave.uid != RS485_DUMMY_UI_UID) {
+            slave_index = poll_index;
             address = slave.address;
             identity_due = !slave.identity_synced ||
                            now - slave.last_identity_ms >= RS485_IDENTITY_SYNC_INTERVAL_MS;
@@ -1994,16 +2148,31 @@ static void rs485_poll_one_slave() {
 
     if (!poll_enabled || slave_count == 0 || address == 0) return;
 
-    if (identity_due) {
-        rs485_sync_identity_if_needed(address);
-        return;
-    }
-    if (capability_due) {
-        rs485_sync_capability_if_needed(address);
+    data_lock(g_state);
+    bool boot_recovery_first = slave_index < RS485_MAX_SLAVES &&
+                               g_state.rs485.slaves[slave_index].mac != 0 &&
+                               g_state.rs485.slaves[slave_index].last_seen == 0 &&
+                               !g_state.rs485.slaves[slave_index].online;
+    data_unlock(g_state);
+    if (boot_recovery_first) {
+        rs485_try_auto_recovery(slave_index);
         return;
     }
 
-    rs485_poll_sensor_registers(address);
+    bool ok = false;
+    if (identity_due) {
+        ok = rs485_sync_identity_if_needed(address);
+        if (!ok) rs485_try_auto_recovery(slave_index);
+        return;
+    }
+    if (capability_due) {
+        ok = rs485_sync_capability_if_needed(address);
+        if (!ok) rs485_try_auto_recovery(slave_index);
+        return;
+    }
+
+    ok = rs485_poll_sensor_registers(address);
+    if (!ok) rs485_try_auto_recovery(slave_index);
 }
 
 static void rs485_handle_ui_test_request() {

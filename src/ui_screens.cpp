@@ -1178,12 +1178,66 @@ static bool temp_channel_enabled_by_other_slave(const RS485State& rs485,
     for (uint8_t i = 0; i < count; i++) {
         if (i == current_index) continue;
         const RS485SlaveState& slave = rs485.slaves[i];
-        if ((slave.enabled_mask & RS485_CAP_TEMP) &&
+        if (slave.online &&
+            (slave.enabled_mask & RS485_CAP_TEMP) &&
             (slave.temp_enabled_mask & (1 << channel))) {
             return true;
         }
     }
     return false;
+}
+
+static bool capability_enabled_by_other_online_slave(const RS485State& rs485,
+                                                     uint8_t current_index,
+                                                     uint16_t capability) {
+    if (capability == 0 || capability == RS485_CAP_LUX) return false;
+    uint8_t count = rs485.slave_count;
+    if (count > RS485_MAX_SLAVES) count = RS485_MAX_SLAVES;
+    for (uint8_t i = 0; i < count; i++) {
+        if (i == current_index) continue;
+        const RS485SlaveState& slave = rs485.slaves[i];
+        if (slave.online && (slave.enabled_mask & capability)) return true;
+    }
+    return false;
+}
+
+static uint8_t temp_assignable_mask_for_slave(const RS485State& rs485, uint8_t current_index) {
+    uint8_t mask = 0;
+    for (uint8_t channel = 0; channel < DASHBOARD_TEMP_SLOTS; channel++) {
+        if (!temp_channel_enabled_by_other_slave(rs485, current_index, channel)) {
+            mask |= (1 << channel);
+        }
+    }
+    return mask;
+}
+
+static bool profile_has_assignable_slots(const RS485State& rs485,
+                                         uint8_t current_index,
+                                         DeviceProfile profile) {
+    uint16_t allowed = device_profile_capability_mask(profile);
+    uint16_t main_mask = allowed & ~RS485_CAP_LUX;
+    if (main_mask == 0) return true;
+
+    if (main_mask & RS485_CAP_TEMP) {
+        if (temp_assignable_mask_for_slave(rs485, current_index) == 0) return false;
+    }
+
+    const uint16_t single_caps[] = {
+        RS485_CAP_CO2,
+        RS485_CAP_PRESENCE,
+        RS485_CAP_LIGHT_RELAY,
+        RS485_CAP_AC_IR,
+        RS485_CAP_PROJECTOR_IR
+    };
+    for (uint8_t i = 0; i < sizeof(single_caps) / sizeof(single_caps[0]); i++) {
+        uint16_t capability = single_caps[i];
+        if ((main_mask & capability) &&
+            capability_enabled_by_other_online_slave(rs485, current_index, capability)) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 static bool slave_feature_is_main(uint16_t capability) {
@@ -1205,6 +1259,25 @@ static bool slave_feature_available(const RS485SlaveState& slave, const FeatureR
     if (!slave_profile_allows(slave, row.capability)) return false;
     if (row.capability == RS485_CAP_TEMP) {
         return row.channel < DASHBOARD_TEMP_SLOTS;
+    }
+    return true;
+}
+
+static bool slave_feature_available_for_state(const RS485State& rs485,
+                                              uint8_t current_index,
+                                              const RS485SlaveState& slave,
+                                              const FeatureRow& row) {
+    if (row.profile_row) {
+        return profile_has_assignable_slots(rs485, current_index, row.profile);
+    }
+
+    if (!slave_feature_available(slave, row)) return false;
+    if (row.capability == RS485_CAP_TEMP) {
+        return row.channel < DASHBOARD_TEMP_SLOTS &&
+               !temp_channel_enabled_by_other_slave(rs485, current_index, row.channel);
+    }
+    if (slave_feature_is_main(row.capability)) {
+        return !capability_enabled_by_other_online_slave(rs485, current_index, row.capability);
     }
     return true;
 }
@@ -1273,6 +1346,30 @@ static void slave_apply_profile_policy(RS485SlaveState& slave, DeviceProfile pro
             case RELAY_NODE: slave.enabled_mask |= RS485_CAP_LIGHT_RELAY; break;
             case IR_COMBO_NODE: slave.enabled_mask |= RS485_CAP_AC_IR | RS485_CAP_PROJECTOR_IR; break;
             default: break;
+        }
+    }
+}
+
+static void slave_apply_profile_policy_for_state(RS485State& rs485,
+                                                 uint8_t current_index,
+                                                 RS485SlaveState& slave,
+                                                 DeviceProfile profile,
+                                                 bool set_defaults) {
+    slave_apply_profile_policy(slave, profile, set_defaults);
+
+    uint16_t allowed = device_profile_capability_mask(profile);
+    if (allowed & RS485_CAP_TEMP) {
+        uint8_t assignable_mask = temp_assignable_mask_for_slave(rs485, current_index);
+        slave.temp_available_mask &= assignable_mask;
+        slave.temp_enabled_mask &= assignable_mask;
+        if (set_defaults) {
+            slave.temp_enabled_mask = assignable_mask;
+        }
+        slave.temp_count = temp_mask_count(slave.temp_available_mask);
+        if (slave.temp_enabled_mask == 0) {
+            slave.enabled_mask &= ~RS485_CAP_TEMP;
+        } else {
+            slave.enabled_mask |= RS485_CAP_TEMP;
         }
     }
 }
@@ -1670,12 +1767,8 @@ void render_slave_detail(BuildingState& state) {
         const FeatureRow& feature = SLAVE_FEATURE_ROWS[i];
         int x = 20;
         int y = 190 + row * 31;
-        bool available = slave_feature_available(slave, feature);
+        bool available = slave_feature_available_for_state(state.rs485, detail_index, slave, feature);
         bool enabled = slave_feature_enabled(slave, feature);
-        if (!feature.profile_row && feature.capability == RS485_CAP_TEMP && !enabled &&
-            temp_channel_enabled_by_other_slave(state.rs485, detail_index, feature.channel)) {
-            available = false;
-        }
 
         drawCardBase(x, y, 440, 28, available ? COLOR_CARD_BG : COLOR_STAT_OFF);
         p_canvas->drawRoundRect(x + 14, y + 6, 18, 18, 3, available ? COLOR_TEXT_SEC : COLOR_CARD_BG);
@@ -1690,7 +1783,7 @@ void render_slave_detail(BuildingState& state) {
         p_canvas->setTextDatum(TextDatum::MiddleRight);
         p_canvas->setTextColor(!available ? COLOR_TEXT_SEC : (enabled ? COLOR_STAT_ON : COLOR_TEXT_SEC));
         p_canvas->drawString(feature.profile_row ?
-                             (enabled ? "Selected" : "Profile") :
+                             (enabled ? "Selected" : (!available ? "Locked" : "Profile")) :
                              (!available ? "Unavailable" : (enabled ? "Enabled" : "Off")),
                              444, y + 14);
         p_canvas->setTextDatum(TextDatum::TopLeft);
@@ -2696,15 +2789,11 @@ void handle_slave_detail_touch(BuildingState& state, int tx, int ty) {
 
         data_lock(state);
         RS485SlaveState& slave = state.rs485.slaves[target_index];
-        bool available = slave_feature_available(slave, feature);
+        bool available = slave_feature_available_for_state(state.rs485, target_index, slave, feature);
         bool enabled = slave_feature_enabled(slave, feature);
-        if (!feature.profile_row && feature.capability == RS485_CAP_TEMP && !enabled &&
-            temp_channel_enabled_by_other_slave(state.rs485, target_index, feature.channel)) {
-            available = false;
-        }
         if (available) {
             if (feature.profile_row) {
-                slave_apply_profile_policy(slave, feature.profile, true);
+                slave_apply_profile_policy_for_state(state.rs485, target_index, slave, feature.profile, true);
             } else if (feature.capability == RS485_CAP_TEMP) {
                 slave_mark_feature_assignable(slave, feature);
                 slave.enabled_mask |= RS485_CAP_TEMP;
