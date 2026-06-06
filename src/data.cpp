@@ -2,11 +2,54 @@
 #include "mapping_manager.h"
 #include <Preferences.h>
 #include <string.h>
+#include "mqtt_secrets.h"
 
 BuildingState g_state;
 
 static const char* RS485_PREF_NS = "rs485cfg";
+static const char* DEVICE_PREF_NS = "device_cfg";
 static const uint8_t RS485_PREF_ASSIGN_SCHEMA = 2;
+
+const char* device_profile_name(DeviceProfile profile) {
+    switch (profile) {
+        case TEMP_NODE: return "TEMP_NODE";
+        case PRESENCE_NODE: return "PRESENCE_NODE";
+        case CO2_NODE: return "CO2_NODE";
+        case RELAY_NODE: return "RELAY_NODE";
+        case IR_COMBO_NODE: return "IR_COMBO_NODE";
+        default: return "UNASSIGNED";
+    }
+}
+
+const char* device_registry_status_name(DeviceRegistryStatus status) {
+    switch (status) {
+        case DEVICE_STATUS_ONLINE: return "ONLINE";
+        case DEVICE_STATUS_OFFLINE: return "OFFLINE";
+        case DEVICE_STATUS_DEGRADED: return "DEGRADED";
+        case DEVICE_STATUS_UNPAIRED_DEVICE_DETECTED: return "UNPAIRED_DEVICE_DETECTED";
+        default: return "UNKNOWN";
+    }
+}
+
+uint16_t device_profile_capability_mask(DeviceProfile profile) {
+    switch (profile) {
+        case TEMP_NODE: return CAP_TEMP | CAP_LUX;
+        case PRESENCE_NODE: return CAP_HUMAN_PRESENCE | CAP_LUX;
+        case CO2_NODE: return CAP_CO2 | CAP_LUX;
+        case RELAY_NODE: return CAP_LIGHT_RELAY | CAP_LUX;
+        case IR_COMBO_NODE: return CAP_AC_IR | CAP_PROJECTOR_IR | CAP_LUX;
+        default: return 0;
+    }
+}
+
+DeviceProfile device_profile_from_capabilities(uint16_t capability) {
+    if (capability & (CAP_AC_IR | CAP_PROJECTOR_IR)) return IR_COMBO_NODE;
+    if (capability & CAP_LIGHT_RELAY) return RELAY_NODE;
+    if (capability & CAP_CO2) return CO2_NODE;
+    if (capability & CAP_HUMAN_PRESENCE) return PRESENCE_NODE;
+    if (capability & CAP_TEMP) return TEMP_NODE;
+    return DEVICE_PROFILE_UNASSIGNED;
+}
 
 void data_init(BuildingState& state) {
     state.mutex = xSemaphoreCreateMutex();
@@ -14,6 +57,7 @@ void data_init(BuildingState& state) {
     state.ui_needs_update = true;
     state.last_data_ts = millis();
     data_load_dummy(state);
+    data_load_device_config(state);
     data_load_rs485_config(state);
 }
 
@@ -49,6 +93,15 @@ void data_load_dummy(BuildingState& state) {
 
         strcpy(state.net.time_str,   "--:--");
         strcpy(state.net.room_name,  "Meeting Room A");
+        strcpy(state.net.device_name, "Meeting Room Master");
+        strcpy(state.net.class_name, "HD01");
+        strcpy(state.net.mqtt_server, MQTT_SERVER_DEFAULT);
+        state.net.mqtt_port = MQTT_PORT_SECURE_DEFAULT;
+        state.net.mqtt_use_tls = true;
+        strncpy(state.net.mqtt_user, MQTT_USER_DEFAULT, sizeof(state.net.mqtt_user) - 1);
+        state.net.mqtt_user[sizeof(state.net.mqtt_user) - 1] = '\0';
+        strncpy(state.net.mqtt_pass, MQTT_PASS_DEFAULT, sizeof(state.net.mqtt_pass) - 1);
+        state.net.mqtt_pass[sizeof(state.net.mqtt_pass) - 1] = '\0';
         strcpy(state.net.slave_name[0], "Slave 1");
         strcpy(state.net.slave_name[1], "Slave 2");
         strcpy(state.net.conn_status,        "Initializing...");
@@ -69,6 +122,8 @@ void data_load_dummy(BuildingState& state) {
         strcpy(state.net.lan_subnet,    "255.255.255.0");
         strcpy(state.net.lan_dns,       "8.8.8.8");
         strcpy(state.net.connected_wifi_ssid, "-");
+        state.net.saved_wifi_ssid[0] = '\0';
+        state.net.saved_wifi_pass[0] = '\0';
 
         state.net.wifi_scan_requested = false;
         state.net.wifi_scan_active = false;
@@ -104,6 +159,15 @@ void data_load_dummy(BuildingState& state) {
         state.rs485.test_busy = false;
         state.rs485.test_write = false;
         state.rs485.test_ok = false;
+        state.rs485.light_command_requested = false;
+        state.rs485.light_command_on = false;
+        state.rs485.ac_command_requested = false;
+        state.rs485.ac_command_power = false;
+        state.rs485.ac_command_target_c = state.sensor.temp_target;
+        state.rs485.ac_command_mode = 0;
+        state.rs485.projector_command_requested = false;
+        state.rs485.projector_command_power = false;
+        state.rs485.projector_command_input = 0;
         state.rs485.test_address = 0x00;
         state.rs485.test_cmd = 0x03;
         state.rs485.test_result = 0;
@@ -117,6 +181,9 @@ void data_load_dummy(BuildingState& state) {
         memset(state.rs485.slaves, 0, sizeof(state.rs485.slaves));
         state.rs485.slaves[0].address = 0x00;
         strcpy(state.rs485.slaves[0].name, "Device 0");
+        strcpy(state.rs485.slaves[0].room, "Unassigned");
+        state.rs485.slaves[0].profile = DEVICE_PROFILE_UNASSIGNED;
+        state.rs485.slaves[0].registry_status = DEVICE_STATUS_UNKNOWN;
         state.rs485.slaves[0].role = 0x00;
         state.rs485.slaves[0].enabled_mask = 0;
         state.rs485.slaves[0].temp_available_mask = 0;
@@ -158,6 +225,56 @@ void data_load_dummy(BuildingState& state) {
     }
 }
 
+void data_load_device_config(BuildingState& state) {
+    Preferences prefs;
+    if (!prefs.begin(DEVICE_PREF_NS, true)) return;
+
+    data_lock(state);
+    prefs.getString("device_name", state.net.device_name, sizeof(state.net.device_name));
+    prefs.getString("class_name", state.net.class_name, sizeof(state.net.class_name));
+    prefs.getString("mqtt_server", state.net.mqtt_server, sizeof(state.net.mqtt_server));
+    state.net.mqtt_port = prefs.getUShort("mqtt_port", state.net.mqtt_port);
+    state.net.mqtt_use_tls = prefs.getBool("mqtt_tls", state.net.mqtt_use_tls);
+    prefs.getString("mqtt_user", state.net.mqtt_user, sizeof(state.net.mqtt_user));
+    prefs.getString("mqtt_pass", state.net.mqtt_pass, sizeof(state.net.mqtt_pass));
+    if (state.net.device_name[0] == '\0') {
+        strncpy(state.net.device_name, "Meeting Room Master", sizeof(state.net.device_name) - 1);
+        state.net.device_name[sizeof(state.net.device_name) - 1] = '\0';
+    }
+    if (state.net.class_name[0] == '\0') {
+        strncpy(state.net.class_name, "HD01", sizeof(state.net.class_name) - 1);
+        state.net.class_name[sizeof(state.net.class_name) - 1] = '\0';
+    }
+    if (state.net.mqtt_server[0] == '\0') {
+        strncpy(state.net.mqtt_server, MQTT_SERVER_DEFAULT, sizeof(state.net.mqtt_server) - 1);
+        state.net.mqtt_server[sizeof(state.net.mqtt_server) - 1] = '\0';
+    }
+    if (state.net.mqtt_port == 0) {
+        state.net.mqtt_port = state.net.mqtt_use_tls ? MQTT_PORT_SECURE_DEFAULT : MQTT_PORT_NORMAL_DEFAULT;
+    }
+    state.ui_needs_update = true;
+    data_unlock(state);
+
+    prefs.end();
+}
+
+void data_save_device_config(BuildingState& state) {
+    Preferences prefs;
+    if (!prefs.begin(DEVICE_PREF_NS, false)) return;
+
+    data_lock(state);
+    prefs.putString("device_name", state.net.device_name);
+    prefs.putString("class_name", state.net.class_name);
+    prefs.putString("mqtt_server", state.net.mqtt_server);
+    prefs.putUShort("mqtt_port", state.net.mqtt_port);
+    prefs.putBool("mqtt_tls", state.net.mqtt_use_tls);
+    prefs.putString("mqtt_user", state.net.mqtt_user);
+    prefs.putString("mqtt_pass", state.net.mqtt_pass);
+    data_unlock(state);
+
+    prefs.end();
+}
+
 void data_load_rs485_config(BuildingState& state) {
     Preferences prefs;
     if (!prefs.begin(RS485_PREF_NS, true)) return;
@@ -178,6 +295,11 @@ void data_load_rs485_config(BuildingState& state) {
         state.rs485.slaves[i].uid = prefs.getULong(key, state.rs485.slaves[i].uid);
         snprintf(key, sizeof(key), "s%u_mac", i);
         state.rs485.slaves[i].mac = prefs.getULong64(key, state.rs485.slaves[i].mac);
+        snprintf(key, sizeof(key), "s%u_prof", i);
+        state.rs485.slaves[i].profile = (DeviceProfile)prefs.getUChar(key, state.rs485.slaves[i].profile);
+        if (state.rs485.slaves[i].profile > IR_COMBO_NODE) {
+            state.rs485.slaves[i].profile = DEVICE_PROFILE_UNASSIGNED;
+        }
         snprintf(key, sizeof(key), "s%u_cap", i);
         state.rs485.slaves[i].capability = prefs.getUShort(key, state.rs485.slaves[i].capability);
         snprintf(key, sizeof(key), "s%u_en", i);
@@ -225,6 +347,22 @@ void data_load_rs485_config(BuildingState& state) {
         if (state.rs485.slaves[i].name[0] == '\0' && state.rs485.slaves[i].address != 0) {
             snprintf(state.rs485.slaves[i].name, sizeof(state.rs485.slaves[i].name), "Node %02X", state.rs485.slaves[i].address);
         }
+        snprintf(key, sizeof(key), "s%u_room", i);
+        prefs.getString(key, state.rs485.slaves[i].room, sizeof(state.rs485.slaves[i].room));
+        if (state.rs485.slaves[i].room[0] == '\0') {
+            strncpy(state.rs485.slaves[i].room, state.net.class_name[0] ? state.net.class_name : "Room",
+                    sizeof(state.rs485.slaves[i].room) - 1);
+            state.rs485.slaves[i].room[sizeof(state.rs485.slaves[i].room) - 1] = '\0';
+        }
+        if (state.rs485.slaves[i].profile == DEVICE_PROFILE_UNASSIGNED) {
+            state.rs485.slaves[i].profile = device_profile_from_capabilities(
+                state.rs485.slaves[i].enabled_mask ? state.rs485.slaves[i].enabled_mask : state.rs485.slaves[i].capability);
+        }
+        if (state.rs485.slaves[i].address != 0 || state.rs485.slaves[i].mac != 0) {
+            state.rs485.slaves[i].registry_status = state.rs485.slaves[i].online ? DEVICE_STATUS_ONLINE : DEVICE_STATUS_OFFLINE;
+        } else {
+            state.rs485.slaves[i].registry_status = DEVICE_STATUS_UNKNOWN;
+        }
     }
 
     for (uint8_t i = 0; i < DASHBOARD_LOGICAL_SLOT_COUNT; i++) {
@@ -265,6 +403,8 @@ void data_save_rs485_config(BuildingState& state) {
         prefs.putULong(key, slave.uid);
         snprintf(key, sizeof(key), "s%u_mac", i);
         prefs.putULong64(key, slave.mac);
+        snprintf(key, sizeof(key), "s%u_prof", i);
+        prefs.putUChar(key, (uint8_t)slave.profile);
         snprintf(key, sizeof(key), "s%u_cap", i);
         prefs.putUShort(key, slave.capability);
         snprintf(key, sizeof(key), "s%u_en", i);
@@ -289,6 +429,8 @@ void data_save_rs485_config(BuildingState& state) {
         prefs.putUChar(key, slave.lcd_count);
         snprintf(key, sizeof(key), "s%u_name", i);
         prefs.putString(key, slave.name);
+        snprintf(key, sizeof(key), "s%u_room", i);
+        prefs.putString(key, slave.room);
     }
 
     for (uint8_t i = 0; i < DASHBOARD_LOGICAL_SLOT_COUNT; i++) {
