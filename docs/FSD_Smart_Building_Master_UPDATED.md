@@ -753,7 +753,7 @@ Touch detection errors SHALL be logged with `[TC]` prefix and SHALL NOT block UI
 System SHALL support dynamic priority switching between WiFi and LAN without reboot.
 
 **NET-002**  
-WiFi credentials SHALL be persisted in NVS namespace `"wifi_cfg"`. Default SSID: `han`, Default Password: `hanhanhan`.
+WiFi credentials SHALL be persisted in NVS namespace `"wifi_cfg"`. WiFi Setup SHALL load and display the last saved SSID and password whenever the screen is opened. Password SHALL remain masked unless the user explicitly enables password visibility.
 
 **NET-003**  
 Firmware V2 SHALL evaluate MQTT staleness per configured data topic. If one topic has no valid update for >10 seconds, only that topic's displayed value SHALL become stale/NULL; other topics that continue updating SHALL remain valid. If the MQTT connection itself is disconnected, all MQTT-backed values MAY be marked disconnected/stale together.
@@ -808,6 +808,15 @@ MQTT subscribe behavior SHALL support actuator command topics for LED, AC, proje
 
 **NET-020**  
 Device name SHALL be editable from Settings/Info and persisted in NVS/Preferences. Device name SHALL be used in MQTT payloads, client identity where appropriate, and UI/admin labels.
+
+**NET-021**
+The MQTT Setup entry SHALL open a summary screen before any field editor. The summary SHALL display broker host, port, TLS mode, username, masked password, and current MQTT connection status.
+
+**NET-022**
+The active MQTT broker host, port, TLS mode, username, and password SHALL be persisted in NVS/Preferences and SHALL be used by MQTT reconnect logic instead of remaining build-time-only values.
+
+**NET-023**
+MQTT `SAVE & RECONNECT` SHALL persist the active connection fields, disconnect the current MQTT session, and allow the normal MQTT reconnect loop to connect using the newly saved configuration.
 
 ### 7.4 RS485
 
@@ -974,6 +983,19 @@ retain_publish
 qos
 ```
 
+V2.4 implemented connection subset:
+
+```text
+NVS namespace: device_cfg
+key: mqtt_server
+key: mqtt_port
+key: mqtt_tls
+key: mqtt_user
+key: mqtt_pass
+```
+
+The V2.4 MQTT Setup screen implements the connection subset above. Presets, editable topic templates, preferred network, and publish interval remain future extensions.
+
 Rules:
 - Saved config SHALL survive reboot and firmware soft reset.
 - Password SHALL be editable but hidden by default in UI.
@@ -1006,9 +1028,9 @@ Why it changed: sensors should be lightweight and last-known values should be vi
 
 Implementation effect: MQTT Setup MAY display these defaults, but firmware agents should use these policy values as the first V2 implementation baseline.
 
-### 10.1.2 MQTT Presets
+### 10.1.2 Future MQTT Presets
 
-MQTT Setup SHALL support:
+Future MQTT Setup MAY support:
 - selecting an existing preset
 - editing the active preset
 - saving as a new preset
@@ -1227,11 +1249,8 @@ Settings Page 1:
 - RS485 status
 
 Settings Page 2:
-- MQTT Broker Setup (Clickable card, opens keyboard overlay to configure broker)
-- Device Name (Clickable card, opens keyboard overlay to edit)
-- Class Name (Clickable card, opens keyboard overlay to edit)
-- Firmware Version (Static info)
-- Developer Attribution (Static info)
+- MQTT Setup entry (opens dedicated summary screen)
+- Device Info entry (opens dedicated Device Info screen)
 ```
 
 Navigation rule:
@@ -1239,18 +1258,19 @@ Navigation rule:
 - Page dot indicators at the bottom center SHALL show the active page.
 
 MQTT Setup screen SHALL include:
-- preset selector
 - broker/host field
 - port field
 - username field
-- password field with visibility toggle
-- class/room topic prefix field or explicit per-topic publish fields
-- actuator subscribe topic fields or subscribe topic template
+- masked password field
 - TLS toggle
-- preferred network selector
-- publish rate field in seconds, editable by keyboard
-- connect/test button
-- save button
+- current MQTT connection status
+- `SAVE & RECONNECT` action
+
+V2.4 interaction rules:
+- Opening MQTT Setup SHALL show the complete summary first and SHALL NOT immediately open a keyboard.
+- Broker, port, username, and password editors SHALL open only after the matching field card is tapped.
+- The active connection subset SHALL persist in `device_cfg`.
+- `SAVE & RECONNECT` SHALL reconnect MQTT using the saved values.
 
 Info screen SHALL include:
 - editable device name
@@ -1880,10 +1900,11 @@ System-level requirements:
 - Settings SHALL be the central admin entry point for WiFi, LAN, Slave Manager, network priority, and Page 2 configuration.
 - Settings SHALL support 2-page horizontal swipe navigation.
 - WiFi Setup SHALL expose SSID, password visibility, reconnect, scan, and connect actions using large touch targets.
+- WiFi Setup SHALL populate SSID and password from the last saved `wifi_cfg` credentials whenever the screen is opened.
 - WiFi Scan SHALL present selectable SSID rows with touch scrolling; scan logic remains asynchronous as specified in section 5.5.
 - LAN Setup SHALL expose DHCP/STATIC mode, current link/status, editable static IPv4 fields, and save action using large touch targets.
 - Slave Manager SHALL remain the entry point for discovery, pairing, polling, diagnostics, and detail/mapping navigation.
-- MQTT Broker host domain, Device Name, and Class Name SHALL be editable via keyboard directly from Settings Page 2 and saved dynamically to NVS/Preferences.
+- Settings Page 2 SHALL open dedicated MQTT Setup and Device Info screens. MQTT connection fields and device identity fields SHALL be saved dynamically to NVS/Preferences.
 - Editing class/room name in Settings Page 2 SHALL update default MQTT topic labels generated by the class template, for example `Class HD01 co2` or `Class LA2 co2`.
 
 Detailed visual layout for these surfaces SHOULD be kept in `docs/UIUX.md` or the connectivity mapping design document where applicable; this FSD SHALL avoid duplicating full screen mockups unless required for system behavior.
@@ -1970,6 +1991,13 @@ Temporary AC panel rule:
 - The dashboard SHALL show only one AC control widget for the current implementation.
 - When an `IR_COMBO_NODE` or equivalent IR-capable device exposes AC 1 and AC 2, the single AC widget SHALL send the same power/set-temperature/mode command to both AC channels.
 - Per-AC control widgets may be added later, but they are not part of the current required panel behavior.
+- Expanded AC layouts SHALL enlarge the `UP` and `DOWN` touch targets while keeping the ON/OFF power badge compact.
+- Expanded AC layouts SHALL show Swing and Fan cycling controls in a bottom row.
+- Swing and Fan are temporary UI-only state cycles until the RS485 slave contract defines their registers; they SHALL NOT be presented as confirmed slave state.
+
+Special adaptive layout rules:
+- With AC + Projector and no temperature/LED, AC SHALL use a tall left card and Projector SHALL use a large square control centered on the right.
+- With Temperature + AC + Projector and no LED, AC SHALL use the left card, Projector SHALL use a square upper-right card, and Average Temperature SHALL appear below Projector.
 
 If capability does not exist:
 - widget SHALL be hidden completely

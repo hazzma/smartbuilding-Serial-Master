@@ -112,20 +112,48 @@ Recommended Settings Page 2 layout:
 +------------------------------------------------+
 | Settings 2                             [ BACK ]|
 +------------------------------------------------+
-| MQTT Broker (Tap to edit)                      |
-| wd5de919.ala.asia-southeast1.emqxsl.com        |
+| MQTT Setup                                     |
+| Broker Connected / MQTT Setup                  |
 +------------------------------------------------+
-| [ Device Name ]        [ Class Name ]          |
-| [ Meeting Room Master] [ HD01 ]                |
-+------------------------------------------------+
-| [ Firmware Version ]   [ Attribution ]         |
-| [ Firmware V2.1 ]      [ Hansel Kay CE LAB ]   |
+| Device Info                                    |
+| Name / Class Room                              |
 +------------------------------------------------+
 |                     .   o                      |
 +------------------------------------------------+
 ```
 
-Clicking the MQTT Broker, Device Name, or Class Name cards SHALL open the keyboard input overlay to edit that property. The editable properties are stored dynamically in NVS Preferences and persisted across device reboots.
+Clicking `MQTT Setup` SHALL open a dedicated summary screen first. It SHALL NOT immediately open the broker keyboard editor. Clicking `Device Info` SHALL open the dedicated Device Info screen.
+
+MQTT Setup summary layout:
+
+```text
++------------------------------------------------+
+| MQTT Setup                              [BACK] |
++------------------------------------------------+
+| Broker / Host (tap to edit)                    |
+| broker.example.com                             |
++------------------------------------------------+
+| Port: 8883                 | TLS: ON            |
++------------------------------------------------+
+| Username (tap to edit)                         |
+| classroom-master                               |
++------------------------------------------------+
+| Password (tap to edit)                         |
+| ********                                       |
++------------------------------------------------+
+| MQTT OFFLINE             [SAVE & RECONNECT]    |
++------------------------------------------------+
+```
+
+MQTT Setup behavior:
+- Broker, port, username, and password fields open the keyboard only after their field card is tapped.
+- TLS is changed using its card toggle.
+- Password remains masked on the summary screen.
+- `SAVE & RECONNECT` persists the active values and requests MQTT reconnect using the saved configuration.
+- Broker, port, TLS mode, username, and password SHALL survive reboot through ESP32-S3 NVS/Preferences.
+- The current implementation stores these MQTT connection fields in NVS namespace `device_cfg`.
+
+Device Name and Class Name remain editable from Device Info. These editable properties are stored dynamically in NVS Preferences and persisted across device reboots.
 
 Class/room name behavior:
 
@@ -143,11 +171,27 @@ If class name = LA2:
     Class LA2 led
 ```
 
-What changed: Device Info is displayed directly on Settings Page 2 instead of a separate screen, and the MQTT broker has been made fully editable.
+What changed: Settings Page 2 now acts as an entry page for dedicated MQTT Setup and Device Info screens. MQTT Setup displays the full active connection summary before any edit action.
 
-Why changed: This simplifies settings access and allows dynamic configuration of the MQTT broker domain/IP directly from the device.
+Why changed: Users must be able to inspect the complete MQTT configuration before editing a single field, and saved connection values must remain visible after reboot.
 
-Implementation effect: UI persists the MQTT server, device name, and class name to NVS Preferences, regenerates topic labels accordingly, and transitions between pages 1 and 2 via horizontal touch swipes.
+Implementation effect: UI persists MQTT server, port, TLS mode, username, password, device name, and class name to NVS Preferences. MQTT reconnect uses the saved connection fields. Settings page transitions remain horizontal swipe gestures.
+
+WiFi Setup persistence behavior:
+
+```text
+When WiFi Setup opens:
+    load the last saved SSID and password from NVS namespace wifi_cfg
+    show the saved SSID
+    show the saved password masked unless SHOW is active
+
+When CONNECT is pressed:
+    save the requested SSID and password to wifi_cfg
+    update the WiFi Setup form values
+    start the connection attempt
+```
+
+The WiFi Setup form SHALL NOT reset to hardcoded presentation credentials when reopened.
 
 ---
 
@@ -428,6 +472,23 @@ Projector          LED
 
 The four primary cards SHOULD share matching width and similar height so no control appears visually secondary.
 
+Special layout for Temperature + AC + Projector without LED:
+
+```text
++------------------------------------------------+
+| Settings / Time / Status                       |
+| [ AC control, tall ]   [ Projector square ]    |
+| [ UP ] [ DOWN ]        [                  ]    |
+| [Swing] [ Fan ]        [ Temperature      ]    |
++------------------------------------------------+
+```
+
+Rules:
+- AC remains on the left.
+- Projector is a square control on the upper-right.
+- Average temperature is placed below the projector.
+- AC `UP` and `DOWN` touch targets are enlarged for easier operation.
+
 Current target example:
 
 ```text
@@ -477,6 +538,7 @@ Current AC card target:
 AC Target        [ ON / OFF ]
 24 C             [         ]
 [UP] [DOWN]
+[Swing] [Fan]
 ```
 
 Legacy simplified shape:
@@ -504,6 +566,14 @@ AC Target        [ ON / OFF ]
 Power badge color:
 - ON uses green fill
 - OFF uses red fill
+
+Expanded AC control behavior:
+- The power badge SHALL remain compact; the entire available AC card height SHALL NOT become one oversized ON/OFF button.
+- `UP` and `DOWN` SHALL use larger touch targets in expanded layouts.
+- A bottom control row SHALL show Swing and Fan mode.
+- Current Swing sequence is `AUTO -> UP -> MID -> DOWN -> AUTO`.
+- Current Fan sequence is `AUTO -> LOW -> MID -> HIGH -> AUTO`.
+- Swing and Fan are temporary local UI states only until the RS485 slave contract defines their command/status registers.
 
 Temporary AC 1+2 behavior:
 
@@ -536,6 +606,15 @@ Default placement:
 ```text
 center bottom
 ```
+
+Special AC + Projector layout without temperature or LED:
+
+```text
+AC control: large/tall card on the left
+Projector: large square control centered vertically on the right
+```
+
+The projector SHALL NOT be rendered as a thin horizontal button in this combination.
 
 Projector control SHALL use a large touch target and SHALL visually match the scale of other active dashboard controls.
 
@@ -734,6 +813,17 @@ Pseudo-code:
 
 ```cpp
 void place_controls() {
+    if (has_temp && has_ac && has_projector && !has_led) {
+        ac_rect = LEFT_TALL_CARD;
+        projector_rect = RIGHT_TOP_SQUARE;
+        temperature_rect = RIGHT_BOTTOM_CARD;
+    }
+
+    else if (!has_temp && has_ac && has_projector && !has_led) {
+        ac_rect = LEFT_TALL_CARD;
+        projector_rect = RIGHT_CENTER_SQUARE;
+    }
+
     if (has_projector && has_led) {
         projector_rect = LEFT_BOTTOM_CARD;
         led_rect = RIGHT_BOTTOM_CARD;

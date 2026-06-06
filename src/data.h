@@ -207,6 +207,8 @@ struct NetworkState {
     char  lan_current_dns[16];
     char  lan_link_status[24];
     char  connected_wifi_ssid[32];
+    char  saved_wifi_ssid[32];
+    char  saved_wifi_pass[64];
     bool  time_synced;
     bool  time_syncing;
     char  time_source[8];
@@ -220,6 +222,10 @@ struct NetworkState {
     char  device_name[32];
     char  class_name[16];
     char  mqtt_server[64];
+    uint16_t mqtt_port;
+    bool  mqtt_use_tls;
+    char  mqtt_user[32];
+    char  mqtt_pass[64];
     char  slave_name[2][32];
     char  conn_status[32];
     char  lan_status_detail[64];

@@ -16,6 +16,16 @@ static uint32_t wifi_scan_retry_at_ms = 0;
 void wifi_manager_init() {
     prefs.begin("wifi_cfg", false);
     WiFi.setSleep(false);
+
+    String ssid = prefs.getString("ssid", "");
+    String pass = prefs.getString("pass", "");
+    data_lock(g_state);
+    strncpy(g_state.net.saved_wifi_ssid, ssid.c_str(), sizeof(g_state.net.saved_wifi_ssid) - 1);
+    g_state.net.saved_wifi_ssid[sizeof(g_state.net.saved_wifi_ssid) - 1] = '\0';
+    strncpy(g_state.net.saved_wifi_pass, pass.c_str(), sizeof(g_state.net.saved_wifi_pass) - 1);
+    g_state.net.saved_wifi_pass[sizeof(g_state.net.saved_wifi_pass) - 1] = '\0';
+    g_state.ui_needs_update = true;
+    data_unlock(g_state);
 }
 
 void wifi_manager_set_power(bool on) {
@@ -51,6 +61,10 @@ void wifi_manager_connect(const char* ssid, const char* pass) {
     WiFi.begin(ssid, pass);
     wifi_connecting = true;
     data_lock(g_state);
+    strncpy(g_state.net.saved_wifi_ssid, ssid, sizeof(g_state.net.saved_wifi_ssid) - 1);
+    g_state.net.saved_wifi_ssid[sizeof(g_state.net.saved_wifi_ssid) - 1] = '\0';
+    strncpy(g_state.net.saved_wifi_pass, pass ? pass : "", sizeof(g_state.net.saved_wifi_pass) - 1);
+    g_state.net.saved_wifi_pass[sizeof(g_state.net.saved_wifi_pass) - 1] = '\0';
     strcpy(g_state.net.wifi_status_detail, "CONNECTING...");
     g_state.ui_needs_update = true;
     data_unlock(g_state);

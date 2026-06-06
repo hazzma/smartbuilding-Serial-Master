@@ -96,6 +96,12 @@ void data_load_dummy(BuildingState& state) {
         strcpy(state.net.device_name, "Meeting Room Master");
         strcpy(state.net.class_name, "HD01");
         strcpy(state.net.mqtt_server, MQTT_SERVER_DEFAULT);
+        state.net.mqtt_port = MQTT_PORT_SECURE_DEFAULT;
+        state.net.mqtt_use_tls = true;
+        strncpy(state.net.mqtt_user, MQTT_USER_DEFAULT, sizeof(state.net.mqtt_user) - 1);
+        state.net.mqtt_user[sizeof(state.net.mqtt_user) - 1] = '\0';
+        strncpy(state.net.mqtt_pass, MQTT_PASS_DEFAULT, sizeof(state.net.mqtt_pass) - 1);
+        state.net.mqtt_pass[sizeof(state.net.mqtt_pass) - 1] = '\0';
         strcpy(state.net.slave_name[0], "Slave 1");
         strcpy(state.net.slave_name[1], "Slave 2");
         strcpy(state.net.conn_status,        "Initializing...");
@@ -116,6 +122,8 @@ void data_load_dummy(BuildingState& state) {
         strcpy(state.net.lan_subnet,    "255.255.255.0");
         strcpy(state.net.lan_dns,       "8.8.8.8");
         strcpy(state.net.connected_wifi_ssid, "-");
+        state.net.saved_wifi_ssid[0] = '\0';
+        state.net.saved_wifi_pass[0] = '\0';
 
         state.net.wifi_scan_requested = false;
         state.net.wifi_scan_active = false;
@@ -225,6 +233,10 @@ void data_load_device_config(BuildingState& state) {
     prefs.getString("device_name", state.net.device_name, sizeof(state.net.device_name));
     prefs.getString("class_name", state.net.class_name, sizeof(state.net.class_name));
     prefs.getString("mqtt_server", state.net.mqtt_server, sizeof(state.net.mqtt_server));
+    state.net.mqtt_port = prefs.getUShort("mqtt_port", state.net.mqtt_port);
+    state.net.mqtt_use_tls = prefs.getBool("mqtt_tls", state.net.mqtt_use_tls);
+    prefs.getString("mqtt_user", state.net.mqtt_user, sizeof(state.net.mqtt_user));
+    prefs.getString("mqtt_pass", state.net.mqtt_pass, sizeof(state.net.mqtt_pass));
     if (state.net.device_name[0] == '\0') {
         strncpy(state.net.device_name, "Meeting Room Master", sizeof(state.net.device_name) - 1);
         state.net.device_name[sizeof(state.net.device_name) - 1] = '\0';
@@ -236,6 +248,9 @@ void data_load_device_config(BuildingState& state) {
     if (state.net.mqtt_server[0] == '\0') {
         strncpy(state.net.mqtt_server, MQTT_SERVER_DEFAULT, sizeof(state.net.mqtt_server) - 1);
         state.net.mqtt_server[sizeof(state.net.mqtt_server) - 1] = '\0';
+    }
+    if (state.net.mqtt_port == 0) {
+        state.net.mqtt_port = state.net.mqtt_use_tls ? MQTT_PORT_SECURE_DEFAULT : MQTT_PORT_NORMAL_DEFAULT;
     }
     state.ui_needs_update = true;
     data_unlock(state);
@@ -251,6 +266,10 @@ void data_save_device_config(BuildingState& state) {
     prefs.putString("device_name", state.net.device_name);
     prefs.putString("class_name", state.net.class_name);
     prefs.putString("mqtt_server", state.net.mqtt_server);
+    prefs.putUShort("mqtt_port", state.net.mqtt_port);
+    prefs.putBool("mqtt_tls", state.net.mqtt_use_tls);
+    prefs.putString("mqtt_user", state.net.mqtt_user);
+    prefs.putString("mqtt_pass", state.net.mqtt_pass);
     data_unlock(state);
 
     prefs.end();

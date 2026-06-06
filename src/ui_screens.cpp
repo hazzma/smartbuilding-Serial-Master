@@ -3,6 +3,7 @@
 #include "ui_keyboard.h"
 #include "rs485_manager.h"
 #include "mapping_manager.h"
+#include "mqtt_manager.h"
 
 #include <string.h>
 
@@ -10,8 +11,8 @@ static ScreenState current_screen = SCREEN_DASHBOARD;
 static UIEventCallbacks ui_callbacks;
 
 static int  editing_target = 0;
-static char wifi_ssid[32]  = "han";
-static char wifi_pass[32]  = "hanhanhan";
+static char wifi_ssid[32]  = "";
+static char wifi_pass[64]  = "";
 static bool show_password  = false;
 
 static bool dashboard_env_panel = false;
@@ -771,6 +772,69 @@ void render_device_info(BuildingState& state) {
     p_canvas->setTextColor(state.net.mqtt_ok ? COLOR_STAT_ON : COLOR_STAT_WARN);
     p_canvas->drawString(state.net.mqtt_ok ? "MQTT OK" : "MQTT offline", 38, 282);
 
+    p_canvas->setTextDatum(TextDatum::TopLeft);
+}
+
+void render_mqtt_setup(BuildingState& state) {
+    drawWallpaperBackground();
+
+    p_canvas->setTextDatum(TextDatum::TopLeft);
+    p_canvas->setTextColor(COLOR_TEXT_MAIN);
+    p_canvas->setTextFont(4);
+    p_canvas->drawString("MQTT Setup", 20, 10);
+
+    drawCardBase(350, 8, 110, 38, COLOR_STAT_OFF);
+    p_canvas->setTextDatum(TextDatum::MiddleCenter);
+    p_canvas->setTextFont(2);
+    p_canvas->setTextColor(COLOR_TEXT_MAIN);
+    p_canvas->drawString("BACK", 405, 27);
+
+    drawCardBase(20, 54, 440, 48, COLOR_CARD_BG);
+    p_canvas->setTextDatum(TextDatum::TopLeft);
+    p_canvas->setTextFont(1);
+    p_canvas->setTextColor(COLOR_TEXT_SEC);
+    p_canvas->drawString("Broker / Host (tap to edit)", 36, 62);
+    p_canvas->setTextFont(2);
+    p_canvas->setTextColor(COLOR_TEXT_MAIN);
+    p_canvas->drawString(state.net.mqtt_server[0] ? state.net.mqtt_server : "-", 36, 82);
+
+    drawCardBase(20, 110, 210, 48, COLOR_CARD_BG);
+    drawCardBase(250, 110, 210, 48, state.net.mqtt_use_tls ? COLOR_STAT_ON : COLOR_CARD_BG);
+    char port_text[24];
+    snprintf(port_text, sizeof(port_text), "Port: %u", state.net.mqtt_port);
+    p_canvas->setTextFont(2);
+    p_canvas->setTextColor(COLOR_TEXT_MAIN);
+    p_canvas->drawString(port_text, 36, 138);
+    p_canvas->drawString(state.net.mqtt_use_tls ? "TLS: ON" : "TLS: OFF", 266, 138);
+
+    drawCardBase(20, 166, 440, 44, COLOR_CARD_BG);
+    p_canvas->setTextFont(1);
+    p_canvas->setTextColor(COLOR_TEXT_SEC);
+    p_canvas->drawString("Username (tap to edit)", 36, 172);
+    p_canvas->setTextFont(2);
+    p_canvas->setTextColor(COLOR_TEXT_MAIN);
+    p_canvas->drawString(state.net.mqtt_user[0] ? state.net.mqtt_user : "(empty)", 36, 194);
+
+    drawCardBase(20, 218, 440, 44, COLOR_CARD_BG);
+    p_canvas->setTextFont(1);
+    p_canvas->setTextColor(COLOR_TEXT_SEC);
+    p_canvas->drawString("Password (tap to edit)", 36, 224);
+    char masked[40] = "";
+    size_t pass_len = strlen(state.net.mqtt_pass);
+    if (pass_len > sizeof(masked) - 1) pass_len = sizeof(masked) - 1;
+    for (size_t i = 0; i < pass_len; i++) masked[i] = '*';
+    p_canvas->setTextFont(2);
+    p_canvas->setTextColor(COLOR_TEXT_MAIN);
+    p_canvas->drawString(masked[0] ? masked : "(empty)", 36, 246);
+
+    drawCardBase(20, 274, 210, 38, COLOR_CARD_BG);
+    drawCardBase(250, 274, 210, 38, COLOR_STAT_ON);
+    p_canvas->setTextDatum(TextDatum::MiddleCenter);
+    p_canvas->setTextFont(2);
+    p_canvas->setTextColor(state.net.mqtt_ok ? COLOR_STAT_ON : COLOR_STAT_WARN);
+    p_canvas->drawString(state.net.mqtt_ok ? "MQTT CONNECTED" : "MQTT OFFLINE", 125, 293);
+    p_canvas->setTextColor(COLOR_TEXT_MAIN);
+    p_canvas->drawString("SAVE & RECONNECT", 355, 293);
     p_canvas->setTextDatum(TextDatum::TopLeft);
 }
 
@@ -2205,6 +2269,7 @@ void screens_render(BuildingState& state, int fps) {
         case SCREEN_MAPPING_SOURCE: render_mapping_source(state); break;
         case SCREEN_TEMP_DETAIL: render_temperature_detail(state); break;
         case SCREEN_DEVICE_INFO: render_device_info(state); break;
+        case SCREEN_MQTT_SETUP: render_mqtt_setup(state); break;
         case SCREEN_KEYBOARD:    keyboard_draw();              break;
         default: break;
     }
@@ -2553,6 +2618,12 @@ void handle_settings_touch_event(BuildingState& state, int tx, int ty, TouchEven
                 }
                 // WiFi Setup: 20, 126, 136, 92
                 else if (isHit(tx, ty, 20, 126, 136, 92)) {
+                    data_lock(state);
+                    strncpy(wifi_ssid, state.net.saved_wifi_ssid, sizeof(wifi_ssid) - 1);
+                    wifi_ssid[sizeof(wifi_ssid) - 1] = '\0';
+                    strncpy(wifi_pass, state.net.saved_wifi_pass, sizeof(wifi_pass) - 1);
+                    wifi_pass[sizeof(wifi_pass) - 1] = '\0';
+                    data_unlock(state);
                     screens_set(SCREEN_WIFI_CONFIG);
                 }
                 // LAN Setup: 172, 126, 136, 92
@@ -2574,9 +2645,7 @@ void handle_settings_touch_event(BuildingState& state, int tx, int ty, TouchEven
                 // PAGE 2 Items
                 // MQTT Setup: 20, 72, 440, 62
                 if (isHit(tx, ty, 20, 72, 440, 62)) {
-                    editing_target = 10;
-                    keyboard_set_text(state.net.mqtt_server);
-                    screens_set(SCREEN_KEYBOARD);
+                    screens_set(SCREEN_MQTT_SETUP);
                 }
                 // Device Info: 20, 146, 440, 62
                 else if (isHit(tx, ty, 20, 146, 440, 62)) {
@@ -2603,6 +2672,52 @@ void handle_device_info_touch(BuildingState& state, int tx, int ty) {
         keyboard_set_text(state.net.class_name);
         screens_set(SCREEN_KEYBOARD);
         return;
+    }
+}
+
+void handle_mqtt_setup_touch(BuildingState& state, int tx, int ty) {
+    if (isHit(tx, ty, 350, 8, 110, 38)) {
+        screens_set(SCREEN_SETTINGS);
+        return;
+    }
+    if (isHit(tx, ty, 20, 54, 440, 48)) {
+        editing_target = 10;
+        keyboard_set_text(state.net.mqtt_server);
+        screens_set(SCREEN_KEYBOARD);
+        return;
+    }
+    if (isHit(tx, ty, 20, 110, 210, 48)) {
+        char port[8];
+        snprintf(port, sizeof(port), "%u", state.net.mqtt_port);
+        editing_target = 11;
+        keyboard_set_text(port);
+        screens_set(SCREEN_KEYBOARD);
+        return;
+    }
+    if (isHit(tx, ty, 250, 110, 210, 48)) {
+        data_lock(state);
+        state.net.mqtt_use_tls = !state.net.mqtt_use_tls;
+        state.ui_needs_update = true;
+        data_unlock(state);
+        data_save_device_config(state);
+        return;
+    }
+    if (isHit(tx, ty, 20, 166, 440, 44)) {
+        editing_target = 12;
+        keyboard_set_text(state.net.mqtt_user);
+        screens_set(SCREEN_KEYBOARD);
+        return;
+    }
+    if (isHit(tx, ty, 20, 218, 440, 44)) {
+        editing_target = 13;
+        keyboard_set_text(state.net.mqtt_pass);
+        screens_set(SCREEN_KEYBOARD);
+        return;
+    }
+    if (isHit(tx, ty, 250, 274, 210, 38)) {
+        data_save_device_config(state);
+        mqtt_request_reconnect();
+        screens_set(SCREEN_SETTINGS);
     }
 }
 
@@ -3150,8 +3265,14 @@ void handle_keyboard_touch(BuildingState& state, int tx, int ty) {
     
     // OK / ENTER (Pindah ke kanan: 340, 130)
     if (isHit(tx, ty, 340, kY_row4, 130, 45)) {
-        if      (editing_target == 1) strncpy(wifi_ssid, keyboard_get_text(), 31);
-        else if (editing_target == 2) strncpy(wifi_pass, keyboard_get_text(), 31);
+        if (editing_target == 1) {
+            strncpy(wifi_ssid, keyboard_get_text(), sizeof(wifi_ssid) - 1);
+            wifi_ssid[sizeof(wifi_ssid) - 1] = '\0';
+        }
+        else if (editing_target == 2) {
+            strncpy(wifi_pass, keyboard_get_text(), sizeof(wifi_pass) - 1);
+            wifi_pass[sizeof(wifi_pass) - 1] = '\0';
+        }
         else if (editing_target == 3) strncpy(temp_lan_ip, keyboard_get_text(), 15);
         else if (editing_target == 4) strncpy(temp_lan_gw, keyboard_get_text(), 15);
         else if (editing_target == 5) strncpy(temp_lan_sn, keyboard_get_text(), 15);
@@ -3198,10 +3319,36 @@ void handle_keyboard_touch(BuildingState& state, int tx, int ty) {
             data_unlock(state);
             data_save_device_config(state);
         }
+        else if (editing_target == 11) {
+            uint32_t port = strtoul(keyboard_get_text(), nullptr, 10);
+            if (port == 0 || port > 65535) port = state.net.mqtt_use_tls ? 8883 : 1883;
+            data_lock(state);
+            state.net.mqtt_port = (uint16_t)port;
+            state.ui_needs_update = true;
+            data_unlock(state);
+            data_save_device_config(state);
+        }
+        else if (editing_target == 12) {
+            data_lock(state);
+            strncpy(state.net.mqtt_user, keyboard_get_text(), sizeof(state.net.mqtt_user) - 1);
+            state.net.mqtt_user[sizeof(state.net.mqtt_user) - 1] = '\0';
+            state.ui_needs_update = true;
+            data_unlock(state);
+            data_save_device_config(state);
+        }
+        else if (editing_target == 13) {
+            data_lock(state);
+            strncpy(state.net.mqtt_pass, keyboard_get_text(), sizeof(state.net.mqtt_pass) - 1);
+            state.net.mqtt_pass[sizeof(state.net.mqtt_pass) - 1] = '\0';
+            state.ui_needs_update = true;
+            data_unlock(state);
+            data_save_device_config(state);
+        }
         
         screens_set((editing_target == 1 || editing_target == 2) ? SCREEN_WIFI_CONFIG : 
                     (editing_target >= 3 && editing_target <= 6) ? SCREEN_LAN_CONFIG :
-                    (editing_target == 7) ? SCREEN_SLAVE_DETAIL : SCREEN_SETTINGS);
+                    (editing_target == 7) ? SCREEN_SLAVE_DETAIL :
+                    (editing_target >= 10 && editing_target <= 13) ? SCREEN_MQTT_SETUP : SCREEN_SETTINGS);
         editing_target = 0;
         return;
     }
@@ -3210,7 +3357,8 @@ void handle_keyboard_touch(BuildingState& state, int tx, int ty) {
     if (isHit(tx, ty, 250, kY_row4, 80, 45)) {
         screens_set((editing_target == 1 || editing_target == 2) ? SCREEN_WIFI_CONFIG : 
                     (editing_target >= 3 && editing_target <= 6) ? SCREEN_LAN_CONFIG :
-                    (editing_target == 7) ? SCREEN_SLAVE_DETAIL : SCREEN_SETTINGS);
+                    (editing_target == 7) ? SCREEN_SLAVE_DETAIL :
+                    (editing_target >= 10 && editing_target <= 13) ? SCREEN_MQTT_SETUP : SCREEN_SETTINGS);
         editing_target = 0;
         return;
     }
@@ -3232,6 +3380,7 @@ void screens_handle_touch(BuildingState& state, int tx, int ty) {
         case SCREEN_MAPPING_SOURCE: handle_mapping_source_touch(state, tx, ty); break;
         case SCREEN_TEMP_DETAIL: handle_temperature_detail_touch(state, tx, ty); break;
         case SCREEN_DEVICE_INFO: handle_device_info_touch(state, tx, ty); break;
+        case SCREEN_MQTT_SETUP: handle_mqtt_setup_touch(state, tx, ty); break;
         case SCREEN_KEYBOARD:    handle_keyboard_touch(state, tx, ty);    break;
         default: break;
     }

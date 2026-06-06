@@ -36,6 +36,16 @@ Implementation effect:
 
 ## Patch Notes
 
+### V2.4
+
+- Replaces the direct MQTT broker keyboard shortcut with a dedicated MQTT Setup summary screen.
+- Shows broker host, port, TLS mode, username, masked password, and connection status before editing.
+- Persists MQTT broker, port, TLS mode, username, and password in ESP32-S3 NVS and reconnects using the saved values.
+- Makes each MQTT field editable only after its card is tapped.
+- Loads the last saved WiFi SSID and password from NVS whenever WiFi Setup is opened.
+- Keeps WiFi credentials synchronized with the latest connection request.
+- Updates FSD and UI/UX documentation for the V2.3 dashboard layout and V2.4 network setup behavior.
+
 ### V2.3
 
 - Fixes saved-slave profile selection accidentally clearing all capability assignments and causing the dashboard to show `No Device Active`.

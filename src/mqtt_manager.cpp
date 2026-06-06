@@ -27,8 +27,6 @@
 // const char* mqtt_server       = MQTT_SERVER_DEFAULT;
 const int   mqtt_port_secure  = MQTT_PORT_SECURE_DEFAULT;
 const int   mqtt_port_normal  = MQTT_PORT_NORMAL_DEFAULT;
-const char* mqtt_user         = MQTT_USER_DEFAULT;
-const char* mqtt_pass         = MQTT_PASS_DEFAULT;
 const char* mqtt_topic_sub    = MQTT_TOPIC_SUB_DEFAULT;
 const char* mqtt_topic_pub    = MQTT_TOPIC_PUB_DEFAULT;
 const char* mqtt_device_name  = MQTT_DEVICE_NAME_DEFAULT;
@@ -664,20 +662,38 @@ static void mqtt_subscribe_v2_topics() {
 
 static void reconnect() {
     if (!mqttClient.connected()) {
+        char server[64];
+        char user[32];
+        char pass[64];
+        uint16_t port = 0;
+        bool use_tls = false;
+        data_lock(g_state);
+        strncpy(server, g_state.net.mqtt_server, sizeof(server) - 1);
+        server[sizeof(server) - 1] = '\0';
+        strncpy(user, g_state.net.mqtt_user, sizeof(user) - 1);
+        user[sizeof(user) - 1] = '\0';
+        strncpy(pass, g_state.net.mqtt_pass, sizeof(pass) - 1);
+        pass[sizeof(pass) - 1] = '\0';
+        port = g_state.net.mqtt_port;
+        use_tls = g_state.net.mqtt_use_tls;
+        data_unlock(g_state);
+
         if (g_state.net.net_priority == 1 && g_state.net.lan_connected) {
-            mqttClient.setClient(ethClient);
-            mqttClient.setServer(g_state.net.mqtt_server, mqtt_port_normal);
-            Serial.print("[MQTT] Connecting via LAN...");
+            if (use_tls) mqttClient.setClient(secureClient);
+            else mqttClient.setClient(ethClient);
+            mqttClient.setServer(server, port);
+            Serial.print(use_tls ? "[MQTT] Connecting via LAN (TLS)..." : "[MQTT] Connecting via LAN...");
         } else if (g_state.net.wifi_connected) {
-            mqttClient.setClient(secureClient);
-            mqttClient.setServer(g_state.net.mqtt_server, mqtt_port_secure);
-            Serial.print("[MQTT] Connecting via WiFi (SSL)...");
+            if (use_tls) mqttClient.setClient(secureClient);
+            else mqttClient.setClient(wifiClient);
+            mqttClient.setServer(server, port);
+            Serial.print(use_tls ? "[MQTT] Connecting via WiFi (TLS)..." : "[MQTT] Connecting via WiFi...");
         } else {
             return;
         }
 
         String clientId = "MasterS3-" + String(random(0xffff), HEX);
-        if (mqttClient.connect(clientId.c_str(), mqtt_user, mqtt_pass)) {
+        if (mqttClient.connect(clientId.c_str(), user, pass)) {
             Serial.println("OK");
             mqttClient.subscribe(mqtt_topic_sub, 1);
             mqtt_subscribe_v2_topics();
@@ -717,4 +733,12 @@ void mqtt_loop() {
 
 bool is_mqtt_connected() {
     return mqttClient.connected();
+}
+
+void mqtt_request_reconnect() {
+    mqttClient.disconnect();
+    data_lock(g_state);
+    g_state.net.mqtt_ok = false;
+    g_state.ui_needs_update = true;
+    data_unlock(g_state);
 }
