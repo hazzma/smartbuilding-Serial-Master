@@ -311,10 +311,12 @@ void drawAcTargetWidget(int x, int y, int w, int h, float target_temp, bool ac_o
     p_engine->drawString(target, x + 14, y + 54);
 
     uint16_t power_fill = ac_on ? COLOR_STAT_ON : COLOR_STAT_ERR;
-    int btn_y = y + h - 44;
+    bool expanded_controls = h >= 180;
+    int btn_h = expanded_controls ? 52 : 34;
+    int btn_y = expanded_controls ? y + 90 : y + h - btn_h - 10;
     int chip_x = x + w - 88;
     int chip_y = y + 14;
-    int chip_h = btn_y - chip_y - 4;
+    int chip_h = expanded_controls ? 64 : btn_y - chip_y - 4;
     if (chip_h < 42) chip_h = 42;
     int chip_w = 74;
     p_engine->fillRoundRect(chip_x, chip_y, chip_w, chip_h, 8, power_fill);
@@ -324,12 +326,12 @@ void drawAcTargetWidget(int x, int y, int w, int h, float target_temp, bool ac_o
     p_engine->drawString(ac_on ? "ON" : "OFF", chip_x + chip_w / 2, chip_y + chip_h / 2);
 
     int btn_w = (w - 30) / 2;
-    p_engine->fillRoundRect(x + 10, btn_y, btn_w, 34, 8, COLOR_ACCENT_SEC);
-    p_engine->fillRoundRect(x + 20 + btn_w, btn_y, btn_w, 34, 8, COLOR_STAT_OFF);
+    p_engine->fillRoundRect(x + 10, btn_y, btn_w, btn_h, 8, COLOR_ACCENT_SEC);
+    p_engine->fillRoundRect(x + 20 + btn_w, btn_y, btn_w, btn_h, 8, COLOR_STAT_OFF);
     p_engine->setTextFont(2);
     p_engine->setTextColor(COLOR_TEXT_MAIN);
-    p_engine->drawString("UP", x + 10 + btn_w / 2, btn_y + 17);
-    p_engine->drawString("DOWN", x + 20 + btn_w + btn_w / 2, btn_y + 17);
+    p_engine->drawString("UP", x + 10 + btn_w / 2, btn_y + btn_h / 2);
+    p_engine->drawString("DOWN", x + 20 + btn_w + btn_w / 2, btn_y + btn_h / 2);
     p_engine->setTextDatum(TextDatum::TopLeft);
 }
 

@@ -34,6 +34,23 @@ enum DashboardLogicalId : uint8_t {
     LOGICAL_PROJECTOR_CONTROL
 };
 
+enum DeviceProfile : uint8_t {
+    DEVICE_PROFILE_UNASSIGNED = 0,
+    TEMP_NODE,
+    PRESENCE_NODE,
+    CO2_NODE,
+    RELAY_NODE,
+    IR_COMBO_NODE
+};
+
+enum DeviceRegistryStatus : uint8_t {
+    DEVICE_STATUS_UNKNOWN = 0,
+    DEVICE_STATUS_ONLINE,
+    DEVICE_STATUS_OFFLINE,
+    DEVICE_STATUS_DEGRADED,
+    DEVICE_STATUS_UNPAIRED_DEVICE_DETECTED
+};
+
 struct LogicalMapping {
     uint8_t  logical_id;
     uint8_t  capability_type;
@@ -69,6 +86,9 @@ struct RS485SlaveState {
     uint64_t mac;
     uint32_t uid;
     char     name[24];
+    char     room[24];
+    DeviceProfile profile;
+    DeviceRegistryStatus registry_status;
     uint8_t  role;
     uint16_t capability;
     uint16_t enabled_mask;
@@ -98,6 +118,7 @@ struct RS485SlaveState {
     uint32_t last_identity_ms;
     uint32_t last_capability_ms;
     uint32_t last_seen;
+    bool     sensor_poll_pending;
     bool     online;
     bool     degraded;
     uint16_t error_count;
@@ -131,6 +152,15 @@ struct RS485State {
     bool test_busy;
     bool test_write;
     bool test_ok;
+    bool light_command_requested;
+    bool light_command_on;
+    bool ac_command_requested;
+    bool ac_command_power;
+    float ac_command_target_c;
+    uint8_t ac_command_mode;
+    bool projector_command_requested;
+    bool projector_command_power;
+    uint8_t projector_command_input;
     uint8_t test_address;
     uint8_t test_cmd;
     uint8_t test_result;
@@ -187,6 +217,9 @@ struct NetworkState {
     char  lan_dns[16];
     char  time_str[16];
     char  room_name[32];
+    char  device_name[32];
+    char  class_name[16];
+    char  mqtt_server[64];
     char  slave_name[2][32];
     char  conn_status[32];
     char  lan_status_detail[64];
@@ -222,9 +255,15 @@ extern BuildingState g_state;
 
 void data_init(BuildingState& state);
 void data_load_dummy(BuildingState& state);
+void data_load_device_config(BuildingState& state);
+void data_save_device_config(BuildingState& state);
 void data_load_rs485_config(BuildingState& state);
 void data_save_rs485_config(BuildingState& state);
 void data_lock(BuildingState& state);
 void data_unlock(BuildingState& state);
+const char* device_profile_name(DeviceProfile profile);
+const char* device_registry_status_name(DeviceRegistryStatus status);
+uint16_t device_profile_capability_mask(DeviceProfile profile);
+DeviceProfile device_profile_from_capabilities(uint16_t capability);
 
 #endif

@@ -1,0 +1,504 @@
+# RS485 Master Discovery & Recovery Flow
+
+Dokumen ini menjelaskan flow RS485 master berdasarkan kode aktif:
+
+- `src/rs485_manager.cpp`
+- `src/rs485_manager.h`
+- `src/data.cpp`
+
+Bahasa gampangnya: master punya 2 mode besar.
+
+1. **Normal / auto recovery known slave**
+   Master menjaga slave yang sudah pernah dipair dan MAC-nya sudah tersimpan.
+
+2. **Discover / pairing unknown slave**
+   Master mencari slave baru yang MAC-nya belum ada di registry. Ini harus diklik manual.
+
+## Kesimpulan Paling Penting
+
+Kalau master sudah hidup beberapa menit lalu slave dicolok dan otomatis muncul tanpa klik Discover, itu **bukan berarti master selalu Discover slave baru**.
+
+Yang terjadi kemungkinan besar:
+
+```text
+Slave itu MAC-nya sudah pernah tersimpan di master
+  |
+  v
+Master anggap dia known slave
+  |
+  v
+Master auto recovery ke address 247 tiap 10 detik
+  |
+  v
+Slave yang baru dicolok hidup di 247
+  |
+  v
+MAC cocok
+  |
+  v
+Slave dipulihkan ke address lama, misal 0x03
+  |
+  v
+Master apply ulang assignment/profile tersimpan
+  |
+  v
+UI muncul online
+```
+
+Jadi ada 2 definisi:
+
+| Istilah | Arti | Bisa muncul otomatis? |
+|---|---|---|
+| **Known slave** | MAC sudah pernah tersimpan di master | Ya, lewat auto recovery |
+| **Unknown/new slave** | MAC belum pernah tersimpan di master | Tidak, harus klik Discover |
+
+Untuk known slave, master juga mengingat profile dan sensor assignment terakhir. Contoh: kalau slave dulu disimpan sebagai `TEMP_NODE`, saat dia auto recovery lagi master langsung menulis ulang assignment `TEMP_NODE` ke slave. Slave tidak perlu dipilih ulang kecuali user memang mau ganti profile.
+
+## Address Yang Dipakai
+
+| Address | Fungsi |
+|---:|---|
+| `0x01` | Master secara konsep |
+| `0x02..0xF6` / `2..246` | Address normal slave setelah dipair |
+| `0xF7` / `247` | Default slave setelah boot, pairing, dan recovery |
+| `0x00` | Broadcast, tidak dipakai untuk read normal |
+
+## Timing Aktual Dari Kode
+
+| Timing | Nilai | Dipakai untuk |
+|---|---:|---|
+| Modbus timeout per attempt | `100 ms` | Tunggu respons tiap request |
+| Retry | `1` | Total request = 2 attempt |
+| Normal polling tick | `1000 ms` | Tiap 1 detik master proses 1 slave registry |
+| Discover scan interval | `700 ms` | Saat Discover aktif |
+| Known scan window saat Discover | `4000 ms` | 4 detik awal Discover juga cek address lama |
+| Identity refresh | `10000 ms` | Refresh identity known slave |
+| Capability refresh | `5000 ms` | Refresh capability/assignment known slave |
+| Offline timeout | `5000 ms` | Kalau last_seen lewat ini, slave dianggap offline |
+| Discover timeout | `30000 ms` | Discover berhenti sendiri |
+| Auto recovery interval | `10000 ms` | Recovery known slave diulang tiap 10 detik per slave |
+
+## Flow Normal Boot
+
+Skenario ideal PoE:
+
+```text
+Master mati
+Slave ikut mati
+Power balik
+Slave boot di address 247
+Master boot dan load registry MAC -> address lama
+```
+
+Untuk kondisi ini, flow master wajib seperti ini:
+
+```text
+MASTER BOOT
+  |
+  v
+Load registry dari storage
+  - MAC saved
+  - address saved, misal 0x03
+  - profile
+  - sensor slot assignment
+  |
+  v
+Loop polling mulai tiap 1000 ms
+  |
+  v
+Ambil slave dari registry
+  |
+  v
+Apakah slave punya MAC saved, last_seen == 0, dan online == false?
+  |
+  +--> YA
+  |     |
+  |     v
+  |   BOOT RECOVERY FIRST
+  |   Master kirim recovery ke 247
+  |     - dst = 247
+  |     - reg = 0x00F4
+  |     - qty = 4 register
+  |     - isi = MAC saved + address saved
+  |     |
+  |     v
+  |   Master confirm ke address saved
+  |     - dst = 0x03, misalnya
+  |     - read identity 0x0000..0x0004
+  |     |
+  |     +--> MAC cocok: online
+  |     |     apply ulang assignment/profile tersimpan
+  |     +--> gagal: retry recovery 10 detik lagi
+  |
+  +--> TIDAK
+        |
+        v
+      Poll normal ke address saved
+```
+
+Jadi untuk boot normal PoE, **master tidak boleh mengawali known slave dengan polling address lama dulu**. Dia harus recovery ke `247` dulu, baru confirm ke address lama.
+
+Di kode sekarang ini dijaga oleh kondisi:
+
+```text
+mac != 0
+last_seen == 0
+online == false
+```
+
+Kalau kondisi itu benar, master masuk `boot_recovery_first` dan kirim ke `247`.
+
+## Kenapa Kadang Tetap Kirim Ke Address Lama?
+
+Ada beberapa kondisi yang bikin master kirim ke address lama seperti `0x03`.
+
+### 1. Setelah Recovery Berhasil
+
+Ini normal dan wajib.
+
+```text
+Kirim recovery ke 247
+  |
+  v
+Slave pindah ke 0x03
+  |
+  v
+Master confirm / poll ke 0x03
+```
+
+Jadi log `dst=0x03` setelah recovery bukan salah. Itu tahap confirm/polling.
+
+### 2. Master Tidak Baru Boot, Slave Lama Masih Hidup
+
+Ini skenario debugging pakai adaptor/USB beda:
+
+```text
+Master direstart
+Slave tidak ikut restart
+Slave masih address 0x03
+```
+
+Secara ideal PoE ini tidak terjadi, tapi saat debugging bisa terjadi.
+
+Karena kode sekarang mengutamakan recovery via `247` saat boot, master akan coba `247` dulu. Kalau slave memang masih hidup di `0x03`, recovery ke `247` bisa gagal. Untuk kasus debugging seperti ini, Discover punya jalur tambahan untuk cek address lama di 4 detik awal.
+
+### 3. Slave Sudah Online Di Sesi Sekarang
+
+Kalau slave sudah berhasil recovery/online, master polling normal ke address saved.
+
+```text
+0x03 identity sync
+0x03 capability sync
+0x03 sensor block poll
+```
+
+### 4. Data Legacy / MAC Kosong
+
+Kalau registry punya address tapi MAC kosong, master tidak bisa recovery berbasis MAC. Ini fallback data lama, bukan flow ideal v2.1.
+
+## Apakah Master Selalu Scan `247` Di Loop?
+
+Jawaban pendek:
+
+```text
+Tidak selalu scan unknown device.
+Tapi ya, untuk known slave yang offline/lost, master bisa mencoba recovery ke 247 terus berkala.
+```
+
+Detailnya:
+
+### Untuk Known Slave
+
+Kalau slave sudah ada di registry dan punya MAC saved:
+
+```text
+Master akan mencoba recovery ke 247
+jika slave terlihat lost/offline/degraded.
+```
+
+Retry-nya:
+
+```text
+Paling cepat tiap 10 detik per slave.
+```
+
+Jadi untuk known slave, master memang **tidak nyerah permanen**. Dia akan coba lagi berkala.
+
+Ini kenapa slave yang baru dicolok setelah master lama hidup bisa muncul otomatis:
+
+```text
+Slave itu sebenarnya known.
+Master sudah punya MAC-nya.
+Saat slave dicolok, dia hidup di 247.
+Pada recovery attempt berikutnya, master restore dia.
+```
+
+### Untuk Unknown Slave
+
+Kalau slave belum pernah dipair dan MAC belum ada di registry:
+
+```text
+Master tidak auto-register.
+Master tidak auto-assign address.
+Master tidak auto-munculkan sebagai device resmi.
+Harus klik Discover.
+```
+
+Kalau unknown slave muncul tanpa klik Discover, cek salah satu ini:
+
+- MAC slave itu ternyata sudah pernah tersimpan di master.
+- User pernah menekan Discover dan window 30 detiknya masih aktif.
+- Serial command debug `rs485 pair` atau `rs485 pairscan` pernah dikirim.
+- Ada bug lain di luar flow utama ini.
+
+## Flow Saat Master Diam Tidak Diapa-apain
+
+```text
+MASTER LOOP NORMAL
+  |
+  v
+Setiap 1000 ms proses 1 slave registry
+  |
+  +--> Tidak ada slave registry valid
+  |       |
+  |       v
+  |     Tidak scan 247 untuk unknown device
+  |
+  +--> Ada known slave offline/lost
+  |       |
+  |       v
+  |     Jika sudah lewat 10 detik dari recovery terakhir:
+  |       kirim recovery ke 247
+  |
+  +--> Ada known slave online
+          |
+          v
+        Poll address saved
+```
+
+Jadi master yang "diam" tetap kerja untuk known slave, tapi bukan auto-discover device asing.
+
+## Flow Discover
+
+Discover hanya aktif kalau:
+
+- user klik tombol `DISCOVER`, atau
+- command debug `rs485 pair ...` dipakai.
+
+Saat Discover dimulai:
+
+```text
+pairing_active = true
+pairing_started_ms = millis()
+pairing_timeout_ms = 30000
+poll_enabled = false
+pairing_known_scan_index = 0
+```
+
+Lalu tiap `700 ms`:
+
+```text
+DISCOVER LOOP
+  |
+  v
+Apakah masih dalam 4 detik awal?
+  |
+  +--> YA
+  |     |
+  |     v
+  |   Cek 1 known address lama dari registry
+  |     - read identity ke address saved
+  |     - label log: PAIR_KNOWN_IDENTITY
+  |     |
+  |     +--> MAC cocok
+  |     |     mark known alive
+  |     |     sync capability jika due
+  |     |     scan 247 pada interval itu diskip
+  |     |
+  |     +--> gagal / tidak ada known hit
+  |           lanjut scan 247
+  |
+  +--> TIDAK
+        |
+        v
+      Scan 247
+```
+
+Scan `247`:
+
+```text
+Read identity 247:0x0000..0x0004
+  |
+  +--> timeout
+  |     tunggu 700 ms berikutnya
+  |
+  +--> identity OK
+        |
+        v
+      Cek MAC identity
+        |
+        +--> MAC sudah ada di registry
+        |     recovery known slave
+        |     lalu Discover selesai
+        |
+        +--> MAC belum ada di registry
+              read capability 247:0x0010..0x0017
+              pairing_candidate_ready = true
+              UI tampilkan UNPAIRED DEVICE
+              tunggu user assign
+```
+
+Kalau `30 detik` habis:
+
+```text
+pairing_active = false
+poll_enabled balik ke nilai sebelum Discover
+candidate dibersihkan
+status = RS485 pairing timeout
+```
+
+## Flow Pair Unknown Device
+
+```text
+Unknown candidate muncul di 247
+  |
+  v
+User tekan PAIR DEVICE / ASSIGN AUTO
+  |
+  v
+Master pilih address kosong 2..246
+  |
+  v
+Master write capability assignment ke 247:0x0010..0x0017
+  |
+  v
+Master write NODE_ADDRESS ke 247:0x0000
+  |
+  v
+Slave pindah ke address baru
+  |
+  v
+Master simpan MAC/address/profile/slot ke registry
+  |
+  v
+Discover selesai, polling normal lanjut
+```
+
+## Flow Jika Master Reboot Tapi Slave Tidak Reboot
+
+Ini bukan skenario PoE normal, tapi sering terjadi waktu debugging pakai adaptor/USB beda.
+
+```text
+Master reboot
+Slave tetap hidup di 0x03
+  |
+  v
+Master boot
+  |
+  v
+Master coba recovery ke 247 dulu
+  |
+  v
+Tidak ada slave di 247, karena slave masih di 0x03
+  |
+  v
+Recovery gagal
+```
+
+Untuk kondisi debugging seperti ini:
+
+```text
+Klik Discover
+  |
+  v
+4 detik awal Discover cek known address lama
+  |
+  v
+Slave di 0x03 bisa dikonfirmasi alive
+```
+
+Kenapa bukan default boot behavior? Karena di installasi PoE normal, kalau master mati maka slave juga mati. Jadi saat boot normal, asumsi paling benar adalah slave ada di `247`, bukan address lama.
+
+## Log Serial Yang Perlu Dibaca
+
+| Label | Arti |
+|---|---|
+| `AUTO_RECOVERY` | Normal loop mencoba restore known slave via `247` |
+| `Recovery write TX dst=0xF7 reg=0x00F4 qty=4` | Master mengirim MAC + saved address ke `247` |
+| `AUTO_RECOVERY_CONFIRM` | Master confirm ke address saved setelah recovery |
+| `PAIR_KNOWN_IDENTITY` | Discover sedang cek address lama yang tersimpan |
+| `PAIR_IDENTITY` | Discover sedang scan identity di `247` |
+| `PAIR_CAPABILITY` | Discover baca capability candidate di `247` |
+| `PAIR_SET_ASSIGN` | Master tulis assignment register ke candidate |
+| `PAIR_SET_ADDRESS` | Master tulis address baru ke candidate |
+| `IDENTITY_SYNC` | Polling normal refresh identity ke address saved |
+| `CAPABILITY_SYNC` | Polling normal refresh capability ke address saved |
+| `SENSOR_BLOCK_POLL` | Polling normal baca sensor block |
+
+## Cara Menjawab Pertanyaan Praktis
+
+### "Pas master boot, dia kirim ke 247 atau address lama?"
+
+Untuk known slave normal v2.1:
+
+```text
+Pertama ke 247 untuk recovery.
+Lalu ke address lama untuk confirm/poll.
+```
+
+Kalau terlihat langsung ke address lama, cek:
+
+- apakah itu log setelah recovery,
+- apakah slave sudah online di sesi itu,
+- apakah registry MAC kosong/legacy,
+- atau apakah flow code berubah.
+
+### "Kalau master diam, apakah dia discover slave baru terus?"
+
+```text
+Tidak untuk unknown slave.
+Ya untuk recovery known slave yang offline/lost, tiap 10 detik.
+```
+
+### "Kenapa slave muncul otomatis tanpa klik Discover?"
+
+```text
+Karena slave itu kemungkinan known slave.
+MAC-nya sudah tersimpan.
+Saat dicolok, dia boot di 247.
+Master auto recovery dan restore ke address saved.
+Setelah itu master apply ulang profile/sensor assignment yang tersimpan.
+```
+
+### "Bagaimana kalau mau lupain slave lama?"
+
+```text
+Buka Device Detail.
+Tekan DELETE.
+Master hapus MAC/address/profile/assignment slave itu dari registry.
+Mapping dashboard yang menunjuk ke slave itu ikut dibersihkan.
+Setelah itu slave tersebut tidak akan auto recovery lagi sampai dipair ulang.
+```
+
+### "Kapan wajib klik Discover?"
+
+```text
+Saat slave benar-benar baru dan MAC belum ada di registry.
+```
+
+### "Kapan master nyerah?"
+
+Known slave:
+
+```text
+Tidak nyerah permanen.
+Retry recovery tiap 10 detik selama dia masih dianggap lost/offline.
+```
+
+Unknown slave:
+
+```text
+Tidak dicari di normal loop.
+Discover aktif 30 detik setelah diklik.
+Kalau timeout, harus klik Discover lagi.
+```

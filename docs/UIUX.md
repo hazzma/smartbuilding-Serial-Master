@@ -3,7 +3,7 @@
 
 ## Document Purpose
 
-Dokumen ini mendefinisikan rancangan UI/UX untuk HMI Smart Building Master S3.
+Dokumen ini mendefinisikan rancangan UI/UX untuk HMI Smart Building Master S3 dan aplikasi/dashboard pendamping untuk Smart Building Firmware V2.
 
 Fokus utama UI baru:
 - besar
@@ -13,8 +13,14 @@ Fokus utama UI baru:
 - adaptive berdasarkan fitur/slave yang terdeteksi
 - background/wallpaper first, dengan UI overlay transparan
 - tetap punya logic yang jelas untuk implementasi firmware
+- app/dashboard pendamping memakai navigasi sederhana: Home, Devices, Settings
 
 Dokumen ini dipisahkan dari FSD agar FSD tetap menjadi spesifikasi sistem, sementara dokumen ini menjadi spesifikasi pengalaman pengguna dan aturan layout.
+
+Firmware V2 change note:
+- What changed: UI/app docs now treat per-sensor MQTT topics as the primary dashboard input model.
+- Why changed: Firmware V2 publishes each sensor/control family separately instead of relying on one large master state topic.
+- Implementation effect: app and dashboard implementations SHALL merge per-topic updates into their local view model before rendering.
 
 ---
 
@@ -44,6 +50,104 @@ User cukup lihat:
 ```
 
 Engineer/admin tetap bisa masuk ke menu detail melalui Settings.
+
+---
+
+# 1.1 Companion App Navigation
+
+The Flutter/app dashboard SHALL stay simple and use three primary areas:
+
+- Home
+- Devices
+- Settings
+
+Home:
+- shows the selected class/room dashboard
+- renders live sensor values and actuator states from the current class/room
+- keeps the UI focused on normal operation, not engineering details
+
+Devices:
+- manages discovered MQTT devices/masters
+- lets the user choose which master/class/room is displayed
+- manages display-oriented settings such as visible device labels or dashboard ordering
+
+Settings:
+- manages MQTT broker configuration
+- manages topic/class naming configuration
+- manages app-level preferences that are not part of daily dashboard control
+- provides Device Info on a second Settings page for firmware info and editable class/room name
+
+Firmware V2 change note:
+- What changed: the app navigation is reduced to Home, Devices, and Settings.
+- Why changed: the app should be easy for classroom/building users and should not expose firmware internals as primary navigation.
+- Implementation effect: older app flows that depend on one generic device-detail state page should be treated as secondary or legacy behavior.
+
+---
+
+# 1.2 Settings And Device Info Navigation
+
+Settings SHALL be divided into two static pages. Navigating between Page 1 and Page 2 is performed using horizontal swipe gestures (left swipe to transition from Page 1 to Page 2, and right swipe to transition back). The screen SHALL show page dot indicators at the bottom center to display the active page. There are no NEXT/PREV buttons.
+
+Recommended Settings Page 1 layout:
+
+```text
++------------------------------------------------+
+| Settings                               [ BACK ]|
++------------------------------------------------+
+| Network Priority                       WiFi    |
++------------------------------------------------+
+| [ WiFi Setup ]   [ LAN Setup ]   [ Slaves ]    |
+| [ Connected  ]   [ Setup     ]   [ Fieldbus]   |
++------------------------------------------------+
+| RS485: Fieldbus Online                         |
+| Swipe left for MQTT & Device Info              |
++------------------------------------------------+
+|                     o   .                      |
++------------------------------------------------+
+```
+
+Recommended Settings Page 2 layout:
+
+```text
++------------------------------------------------+
+| Settings 2                             [ BACK ]|
++------------------------------------------------+
+| MQTT Broker (Tap to edit)                      |
+| wd5de919.ala.asia-southeast1.emqxsl.com        |
++------------------------------------------------+
+| [ Device Name ]        [ Class Name ]          |
+| [ Meeting Room Master] [ HD01 ]                |
++------------------------------------------------+
+| [ Firmware Version ]   [ Attribution ]         |
+| [ Firmware V2.1 ]      [ Hansel Kay CE LAB ]   |
++------------------------------------------------+
+|                     .   o                      |
++------------------------------------------------+
+```
+
+Clicking the MQTT Broker, Device Name, or Class Name cards SHALL open the keyboard input overlay to edit that property. The editable properties are stored dynamically in NVS Preferences and persisted across device reboots.
+
+Class/room name behavior:
+
+```text
+If class name = HD01:
+    generated topic labels include:
+    Class HD01 co2
+    Class HD01 suhu
+    Class HD01 led
+
+If class name = LA2:
+    generated topic labels include:
+    Class LA2 co2
+    Class LA2 suhu
+    Class LA2 led
+```
+
+What changed: Device Info is displayed directly on Settings Page 2 instead of a separate screen, and the MQTT broker has been made fully editable.
+
+Why changed: This simplifies settings access and allows dynamic configuration of the MQTT broker domain/IP directly from the device.
+
+Implementation effect: UI persists the MQTT server, device name, and class name to NVS Preferences, regenerates topic labels accordingly, and transitions between pages 1 and 2 via horizontal touch swipes.
 
 ---
 
@@ -401,6 +505,18 @@ Power badge color:
 - ON uses green fill
 - OFF uses red fill
 
+Temporary AC 1+2 behavior:
+
+```text
+If the mapped device profile is IR_COMBO_NODE:
+    AC 1 capability may be enabled.
+    AC 2 capability may be enabled.
+    The current dashboard still shows one AC control panel.
+    Power, target temperature, and mode commands from that panel are mirrored to AC 1 and AC 2 when both are enabled.
+```
+
+This is temporary behavior for the current dashboard. Future UI MAY split AC 1 and AC 2 into separate panels, but the active dashboard requirement is one AC panel with mirrored AC 1+2 commands.
+
 ---
 
 # 11. Projector Widget Behavior
@@ -733,35 +849,154 @@ This is true even when only one or two temperature channels are assigned.
 
 Slave Detail SHALL treat feature rows as master-side assignment controls.
 
+Firmware V2 capability rule:
+
+Slave configuration SHALL use master-owned Device Profile selection and enforcement.
+
+Device Profile choices:
+- `TEMP_NODE`
+- `PRESENCE_NODE`
+- `CO2_NODE`
+- `RELAY_NODE`
+- `IR_COMBO_NODE`
+
+Profile behavior:
+- `TEMP_NODE` enables Temperature rows and MAY enable optional Lux.
+- `PRESENCE_NODE` enables Human Presence rows and MAY enable optional Lux.
+- `CO2_NODE` enables CO2 rows and MAY enable optional Lux.
+- `RELAY_NODE` enables Lamp/Relay rows and MAY enable optional Lux.
+- `IR_COMBO_NODE` enables AC 1, AC 2, and Projector rows together and MAY enable optional Lux.
+
+Lux is defined by the v2.1 slave contract:
+- assignment register: `LUX_SENSOR_ASSIGNMENT 0x0011`
+- runtime registers: `LUX_1_LX..LUX_4_LX 0x0104..0x0107`
+
 Rules:
 
 ```text
-All supported feature rows are Available by default.
+Device Profile is required before SAVE is enabled.
+Supported Device Profile choices are Available by default.
 Checked means assigned/enabled by the master.
 Unchecked means not assigned by the master.
 
-If Temperature N is checked on one slave:
-    Temperature N is Unavailable on other slaves.
+When a Device Profile is selected:
+    Rows allowed by that profile become visible/editable.
+    Non-profile feature rows outside that profile are hidden from the normal row list.
+    Locked profile rows may still show as unavailable when another online slave already owns the exclusive role/slot.
 
-If Temperature N is unchecked:
-    Temperature N becomes Available on all slaves again.
+When the currently selected Device Profile is tapped again:
+    Clear the profile selection.
+    Clear master-owned enabled/checked rows for that slave.
+    Return the detail screen to UNASSIGNED state.
+
+If IR_COMBO_NODE is selected:
+    AC 1, AC 2, and Projector rows are profile-valid.
+    The dashboard still renders one AC panel for now.
+    AC 1+2 commands are mirrored by the current dashboard behavior.
+
+If the Device Profile changes:
+    Clear assignments that are no longer valid for the new profile.
+    Keep name, room, MAC, and assigned address unless the user changes them.
 ```
 
 SAVE behavior:
 
 ```text
 Tap SAVE:
-    write current capability counts to selected slave registers 0x0011..0x0016
-    then optionally write SAVE_CONFIG 0x00F1 = 0xA55A
+    validate selected Device Profile against enabled rows
+    write v2.1 capability assignment/count registers 0x0010..0x0017
+    assign/update slave address by writing NODE_ADDRESS 0x0000 when pairing or re-pairing
+    persist MAC, address, Device Profile, device name, and room in the master saved registry
 ```
 
-Temperature count mapping:
+No slave-side save action:
 
 ```text
-TEMP_SENSOR_COUNT >= 1 -> Temperature 1 / 0x0100
-TEMP_SENSOR_COUNT >= 2 -> Temperature 2 / 0x0101
-TEMP_SENSOR_COUNT >= 3 -> Temperature 3 / 0x0102
-TEMP_SENSOR_COUNT >= 4 -> Temperature 4 / 0x0103
+The UI SHALL NOT expose any slave-side save/persist action.
+The slave is RAM-only.
+The master owns persistence through its saved device registry.
+```
+
+Temperature assignment mapping:
+
+```text
+TEMP_SENSOR_ASSIGNMENT bit 3 -> Temperature 1 / 0x0100
+TEMP_SENSOR_ASSIGNMENT bit 2 -> Temperature 2 / 0x0101
+TEMP_SENSOR_ASSIGNMENT bit 1 -> Temperature 3 / 0x0102
+TEMP_SENSOR_ASSIGNMENT bit 0 -> Temperature 4 / 0x0103
+```
+
+Firmware V2 change note:
+- What changed: the assignment UI now starts from Device Profile selection instead of the legacy unavailable-row rule.
+- Why changed: Firmware V2.1 makes the master responsible for profile policy while the slave remains policy-blind.
+- Implementation effect: UI should enable only rows allowed by the selected Device Profile, write v2.1 registers `0x0010..0x0017`, and persist profile/name/room/address in the master registry.
+
+---
+
+# 19.2 Slave Pairing And Saved Registry UI
+
+Unknown slave state:
+
+```text
+UNPAIRED_DEVICE_DETECTED
+```
+
+Discovery behavior:
+
+```text
+If a device appears at address 247 and its MAC is not in the saved registry:
+    show UNPAIRED_DEVICE_DETECTED
+    show Pair Device as the primary action
+    do not auto-assign address
+    do not auto-select Device Profile
+    do not auto-add it to the saved registry
+```
+
+Pair Device flow:
+
+```text
+Tap Pair Device:
+    read identity from address 247
+    user selects Device Profile
+    user enters device name and room
+    user confirms enabled profile-valid rows
+    master writes capability registers 0x0010..0x0017
+    master writes assigned address to NODE_ADDRESS 0x0000
+    master saves registry entry
+```
+
+Saved device registry fields:
+- Device name
+- Room
+- MAC
+- Address
+- Device Profile
+- Status
+- Last seen
+
+Saved registry actions:
+- Rename
+- Delete
+- Recover
+- Re-Pair
+
+Action behavior:
+
+```text
+Rename:
+    edit saved device name and/or room in the master registry
+
+Delete:
+    remove the saved registry entry after confirmation
+    clear mappings that reference the deleted slave UID/address
+    stop automatic recovery for that slave until it is paired again
+
+Recover:
+    run known-device recovery from the saved MAC/address/profile
+    after recovery, write the saved profile assignment registers back to the slave
+
+Re-Pair:
+    start a user-confirmed pairing flow for the saved device and rewrite v2.1 configuration
 ```
 
 ---
@@ -870,7 +1105,34 @@ Do not send ambiguous TOGGLE commands to slave if reliability retry can duplicat
 
 # 22. Dashboard Data Inputs
 
-DashboardModel SHOULD include:
+Firmware V2 dashboard input model:
+- MQTT data is received per sensor/control topic.
+- The app/dashboard SHALL merge per-topic updates into a local dashboard model.
+- The app/dashboard SHALL NOT assume the old single master state JSON as the primary data source.
+- The old single master state JSON model MAY remain as a Legacy / V1 compatibility note only.
+
+Payload handling by reference:
+- General simple sensors use integer payloads.
+- LED uses JSON payload because it carries ON/OFF state for up to 4 LED positions.
+- Temperature uses JSON payload because it carries readings for 4 DHT22 positions.
+- Full MQTT topic and payload rules live in the MQTT specification; this UI doc only defines how the app/dashboard consumes them.
+
+Example, not hardcoded values:
+- class/room temperature topic updates the temperature card and Temperature Detail screen.
+- class/room LED topic updates all Lamp 1-4 sync states.
+- class/room AC topic updates the AC widget state after the slave confirms the actuator state.
+
+State synchronization rule:
+- User control actions SHALL update the UI as pending until the target device confirms the state.
+- After confirmation, the app/dashboard SHALL refresh from the corresponding published topic.
+- LED state SHALL be synchronized per LED position, not as one ambiguous aggregate state.
+
+Firmware V2 change note:
+- What changed: per-topic MQTT updates are now the primary source for the companion app/dashboard.
+- Why changed: Firmware V2 separates sensor and actuator families into independent topics for simpler app subscriptions and clearer synchronization.
+- Implementation effect: app code should subscribe to the configured class/room topics, normalize incoming payloads, and then render one combined DashboardModel.
+
+DashboardModel SHOULD include normalized fields such as:
 
 ```cpp
 struct DashboardModel {
@@ -906,6 +1168,11 @@ struct DashboardModel {
     char time_text[8];
 };
 ```
+
+Legacy / V1 Notes:
+- A single large master state JSON may exist in older firmware/app flows.
+- It SHALL NOT be documented or implemented as the primary Firmware V2 app/dashboard model.
+- If kept for compatibility, it should be parsed only as a fallback source and clearly labeled as legacy behavior.
 
 ---
 
@@ -944,10 +1211,10 @@ Render top-left Settings/menu touch area
 # 24. Dashboard UI Block Diagram
 
 ```text
-Slave Data / MQTT Data
+Per-Sensor MQTT Topics / Local HMI Slave Data
         |
         v
-Mapping Manager
+Topic Normalizer / Mapping Manager
         |
         v
 DashboardModel
@@ -965,6 +1232,11 @@ Widget Visibility              Widget Placement
                       v
                 Dashboard Render
 ```
+
+Firmware V2 change note:
+- What changed: the UI block diagram now starts from per-sensor MQTT topics for the app and local HMI slave data for the device UI.
+- Why changed: Firmware V2 splits data by sensor/control type while still rendering one simple dashboard.
+- Implementation effect: the render layer should not know whether data came from MQTT or local Modbus; it should consume the normalized DashboardModel.
 
 ---
 

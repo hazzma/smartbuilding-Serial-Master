@@ -1,6 +1,6 @@
 # RS485 Agent Documentation Report
 
-> Current alignment note: the normative architecture document is `docs/Smart_Building_RS485_Modbus_Architecture.md`; the normative slave wire contract is `docs/From_SLave/RS485_Modbus_Slave_Firmware_Contract_V_1_4_0.md`. Older implementation notes below may describe intermediate firmware phases and should be treated as historical unless they match those normative documents.
+> Current alignment note: the normative architecture document is `docs/Smart_Building_RS485_Modbus_Architecture.md`; the normative slave wire contract is `docs/From_SLave/RS485_Modbus_Slave_Firmware_Contract v2.md` v2.1.0. Older implementation notes below describe intermediate firmware phases and should be treated as historical unless they match those normative documents.
 
 ## Reference
 
@@ -8,7 +8,9 @@ Primary reference:
 
 - `docs/Smart_Building_RS485_Modbus_Architecture.md`
 
-Phase 1 follows the new direction from that document:
+Legacy phase reference:
+
+The Phase 1 bullets below describe an earlier implementation pass. They are retained for history only and are superseded by the v2.1.0 contract named above.
 
 - RS485 transport uses Modbus RTU.
 - Master owns the bus.
