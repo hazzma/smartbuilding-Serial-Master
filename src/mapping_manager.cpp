@@ -60,10 +60,26 @@ static bool mapping_source_usable_locked(BuildingState& state, const LogicalMapp
     return slave_has_enabled_capability(*slave, mapping.capability_type);
 }
 
+static bool mapping_source_configured_locked(BuildingState& state, const LogicalMapping& mapping) {
+    if (!mapping.assigned || mapping.capability_type == 0) return false;
+
+    RS485SlaveState* slave = find_slave_by_mapping_locked(state, mapping);
+    if (!slave) return false;
+
+    if (mapping.capability_type == CAP_TEMP) {
+        return mapping.channel < DASHBOARD_TEMP_SLOTS &&
+               (slave->enabled_mask & CAP_TEMP) &&
+               (slave->temp_available_mask & (1 << mapping.channel)) &&
+               (slave->temp_enabled_mask & (1 << mapping.channel));
+    }
+
+    return (slave->enabled_mask & mapping.capability_type) != 0;
+}
+
 static void clear_stale_auto_mappings_locked(BuildingState& state) {
     for (uint8_t i = 0; i < DASHBOARD_LOGICAL_SLOT_COUNT; i++) {
         LogicalMapping& mapping = state.rs485.mappings[i];
-        if (!mapping.assigned || mapping.manual_override) continue;
+        if (!mapping.assigned) continue;
         if (mapping.capability_type == CAP_TEMP &&
             i >= LOGICAL_TEMP_SLOT_1 &&
             i <= LOGICAL_TEMP_SLOT_4 &&
@@ -74,7 +90,15 @@ static void clear_stale_auto_mappings_locked(BuildingState& state) {
             mapping.assigned = false;
             continue;
         }
-        if (mapping_source_usable_locked(state, mapping)) continue;
+        if (mapping.manual_override) {
+            // Preserve manual choices while a known slave is temporarily
+            // offline, but release mappings that reference a removed/replaced
+            // slave or a capability that is no longer assigned.
+            if (mapping_source_configured_locked(state, mapping)) continue;
+            mapping.manual_override = false;
+        } else if (mapping_source_usable_locked(state, mapping)) {
+            continue;
+        }
 
         mapping.slave_uid = 0;
         mapping.slave_addr = 0;

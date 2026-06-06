@@ -289,8 +289,8 @@ AC 1:
 | Register | Name                  | Access | Values                                         |
 | -------- | --------------------- | ------ | ---------------------------------------------- |
 | `0x0200` | `AC_1_POWER`          | R/W    | `0` off, `1` on                                |
-| `0x0201` | `AC_1_SET_TEMP`       | R/W    | Celsius x10                                    |
-| `0x0202` | `AC_1_MODE`           | R/W    | Slave-defined enum                             |
+| `0x0201` | `AC_1_SET_TEMP`       | R/W    | Celsius x10, `160..300`, step `10`             |
+| `0x0202` | `AC_1_MODE`           | R/W    | `0` cool, `1` dry, `2` fan, `3` heat, `4` auto |
 | `0x0206` | `AC_1_COMMAND_STATUS` | R      | `0` idle, `1` success, `2` busy, `3` failed    |
 
 AC 2:
@@ -298,8 +298,8 @@ AC 2:
 | Register | Name                  | Access | Values                                         |
 | -------- | --------------------- | ------ | ---------------------------------------------- |
 | `0x0203` | `AC_2_POWER`          | R/W    | `0` off, `1` on                                |
-| `0x0204` | `AC_2_SET_TEMP`       | R/W    | Celsius x10                                    |
-| `0x0205` | `AC_2_MODE`           | R/W    | Slave-defined enum                             |
+| `0x0204` | `AC_2_SET_TEMP`       | R/W    | Celsius x10, `160..300`, step `10`             |
+| `0x0205` | `AC_2_MODE`           | R/W    | `0` cool, `1` dry, `2` fan, `3` heat, `4` auto |
 | `0x0207` | `AC_2_COMMAND_STATUS` | R      | `0` idle, `1` success, `2` busy, `3` failed    |
 
 Projector:

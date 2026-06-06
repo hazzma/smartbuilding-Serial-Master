@@ -224,6 +224,8 @@ Recommended:
 
 Per the agreed slave contract v2.1.0, all slaves boot at address 247 because slave config is RAM-only. The master owns persistent MAC/address/profile/name/room registry data and restores known slaves after reboot.
 
+For a known slave, recovery restores both transport identity and master-owned role state. After the slave accepts the recovered address, the master reapplies the saved Device Profile and assignment registers so the slave returns to its previous role, such as `TEMP_NODE`, `CO2_NODE`, `PRESENCE_NODE`, `RELAY_NODE`, or `IR_COMBO_NODE`.
+
 ---
 
 # 8. Pairing Flow
@@ -267,10 +269,11 @@ Recovery flow after slave reboot:
 6. Non-matching slaves ignore the recovery write and remain at 247
 7. Master ignores Modbus response collision/error for this recovery write only
 8. Master confirms recovery by polling the recovered assigned address
+9. Master writes saved Device Profile / assignment registers `0x0010..0x0017` to the recovered slave
 
 What changed: recovery is the normal path for known RAM-only slaves after reboot.
 Why it changed: slaves boot at 247 but master-owned registry remembers their assigned identity.
-Implementation effect: master should not wipe or reassign known slaves unless recovery fails or the user intentionally re-pairs them.
+Implementation effect: master should not wipe or reassign known slaves unless recovery fails, the user deletes/forgets the slave, or the user intentionally re-pairs them. A deleted/forgotten slave is removed from the master registry and will not auto-recover until paired again.
 
 ---
 

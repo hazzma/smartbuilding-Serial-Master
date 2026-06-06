@@ -36,6 +36,19 @@ Implementation effect:
 
 ## Patch Notes
 
+### V2.3
+
+- Fixes saved-slave profile selection accidentally clearing all capability assignments and causing the dashboard to show `No Device Active`.
+- Releases stale manual dashboard mappings when their saved slave was removed or replaced, while preserving mappings for temporarily offline known slaves.
+- Restores saved Device Profile and assignment registers after automatic known-slave recovery.
+- Forces one immediate sensor refresh after recovery so restored temperature data becomes visible without waiting for the normal polling cycle.
+- Adds profile-driven Slave Detail rows, profile unselect behavior, and saved-slave delete/forget support.
+- Improves the adaptive dashboard layout for AC + Projector and Temperature + AC + Projector combinations.
+- Enlarges AC temperature `UP` / `DOWN` touch targets while keeping the AC power button compact.
+- Adds temporary dashboard-only Swing and Fan cycling controls. These controls are UI dummy states until the RS485 slave contract defines their registers.
+- Adds direct RS485 relay debug command support and aligns AC target writes with the current x10 register format.
+- Updates Firmware V2.1 recovery, mapping, UI/UX, architecture, and slave-contract documentation.
+
 ### V2.2
 
 - Keeps the WiFi scan stability fix from V2.1.

@@ -118,6 +118,7 @@ struct RS485SlaveState {
     uint32_t last_identity_ms;
     uint32_t last_capability_ms;
     uint32_t last_seen;
+    bool     sensor_poll_pending;
     bool     online;
     bool     degraded;
     uint16_t error_count;

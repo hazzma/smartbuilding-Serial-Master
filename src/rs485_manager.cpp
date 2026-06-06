@@ -49,6 +49,7 @@ struct ModbusRequestPlan {
 };
 
 static bool rs485_poll_sensor_registers(uint8_t address);
+bool rs485_apply_slave_assignments(uint8_t slave_index);
 
 static const char* rs485_rx_result_name(RS485RxResult result) {
     switch (result) {
@@ -607,12 +608,33 @@ static void rs485_mark_recovered_slave(uint64_t mac, uint8_t address) {
         slave.degraded = false;
         slave.consecutive_fail = 0;
         slave.last_seen = millis();
+        slave.sensor_poll_pending = true;
         if (index < 2) g_state.sensor.slave_online[index] = true;
         snprintf(g_state.rs485.status, sizeof(g_state.rs485.status),
                  "RS485 recovered 0x%02X", address);
         g_state.ui_needs_update = true;
     }
     data_unlock(g_state);
+}
+
+static void rs485_apply_saved_assignments_for_address(uint8_t address) {
+    uint8_t index = RS485_MAX_SLAVES;
+    bool configured = false;
+
+    data_lock(g_state);
+    index = rs485_find_slave_index_locked(address);
+    if (index < RS485_MAX_SLAVES) {
+        const RS485SlaveState& slave = g_state.rs485.slaves[index];
+        configured = slave.online &&
+                     (slave.profile != DEVICE_PROFILE_UNASSIGNED ||
+                      slave.enabled_mask != 0 ||
+                      slave.temp_enabled_mask != 0);
+    }
+    data_unlock(g_state);
+
+    if (configured) {
+        rs485_apply_slave_assignments(index);
+    }
 }
 
 static void rs485_write_recovery_registers_ignore_response(uint16_t* recovery, uint16_t quantity) {
@@ -668,6 +690,7 @@ static bool rs485_recover_known_pairing_slave(const uint16_t* identity, uint8_t 
 
     rs485_store_identity(saved_address, recovered_identity, RS485_MODBUS_IDENTITY_REGS);
     rs485_mark_recovered_slave(mac, saved_address);
+    rs485_apply_saved_assignments_for_address(saved_address);
     Serial.printf("[RS485] Recovery confirmed mac=%012llX addr=0x%02X\n",
                   (unsigned long long)mac,
                   saved_address);
@@ -710,6 +733,7 @@ static bool rs485_recover_saved_slave(uint64_t mac, uint8_t saved_address, const
 
     rs485_store_identity(saved_address, recovered_identity, RS485_MODBUS_IDENTITY_REGS);
     rs485_mark_recovered_slave(mac, saved_address);
+    rs485_apply_saved_assignments_for_address(saved_address);
     return true;
 }
 
@@ -908,9 +932,26 @@ static bool rs485_find_control_slave(uint16_t capability,
     return found;
 }
 
+static bool rs485_find_enabled_slave(uint16_t capability, RS485SlaveState& out) {
+    bool found = false;
+    data_lock(g_state);
+    uint8_t count = g_state.rs485.slave_count;
+    if (count > RS485_MAX_SLAVES) count = RS485_MAX_SLAVES;
+    for (uint8_t i = 0; i < count; i++) {
+        const RS485SlaveState& slave = g_state.rs485.slaves[i];
+        if (slave.online && slave.address != 0 && (slave.enabled_mask & capability)) {
+            out = slave;
+            found = true;
+            break;
+        }
+    }
+    data_unlock(g_state);
+    return found;
+}
+
 static bool rs485_write_light_command(bool on) {
     RS485SlaveState slave = {};
-    if (!rs485_find_control_slave(RS485_CAP_LIGHT_RELAY, LOGICAL_LUX_MAIN, slave)) {
+    if (!rs485_find_enabled_slave(RS485_CAP_LIGHT_RELAY, slave)) {
         data_lock(g_state);
         strncpy(g_state.rs485.status, "No relay slave mapped", sizeof(g_state.rs485.status) - 1);
         g_state.rs485.status[sizeof(g_state.rs485.status) - 1] = '\0';
@@ -948,7 +989,7 @@ static bool rs485_write_ac_command(bool power, float target_c, uint8_t mode) {
 
     if (target_c < 16.0f) target_c = 16.0f;
     if (target_c > 30.0f) target_c = 30.0f;
-    uint16_t temp = (uint16_t)(target_c + 0.5f);
+    uint16_t temp = (uint16_t)(target_c + 0.5f) * 10;
 
     bool ok = rs485_write_holding_register(slave.address, RS485_MODBUS_REG_AC_1_POWER,
                                            power ? 1 : 0, "AC1_POWER");
@@ -1086,6 +1127,7 @@ static bool rs485_scan_known_slave_during_pairing() {
     Serial.printf("[RS485] Pairing confirmed known slave addr=0x%02X mac=%012llX\n",
                   address,
                   (unsigned long long)actual_mac);
+    rs485_apply_saved_assignments_for_address(address);
     return true;
 }
 
@@ -1186,6 +1228,7 @@ static void rs485_update_sensors_from_block(uint8_t address,
     if (slave_index < RS485_MAX_SLAVES) {
         g_state.rs485.slaves[slave_index].last_seen = millis();
         g_state.rs485.slaves[slave_index].online = true;
+        g_state.rs485.slaves[slave_index].sensor_poll_pending = false;
         if (slave_index < 2) g_state.sensor.slave_online[slave_index] = true;
     }
 
@@ -1910,6 +1953,7 @@ static void rs485_debug_help() {
     Serial.println("[RS485DBG]   rs485 inject ok|timeout|crc|seq|cmd|addr|nack|error");
     Serial.println("[RS485DBG]   rs485 test [dst_hex] [cmd_hex]");
     Serial.println("[RS485DBG]   rs485 testwrite [dst_hex]");
+    Serial.println("[RS485DBG]   rs485 relay <dst_hex> <channel_1_or_2> <0_or_1>");
     Serial.println("[RS485DBG]   rs485 testforce ok|timeout|crc|seq|cmd|addr|nack|error [dst_hex] [cmd_hex]");
     Serial.println("[RS485DBG] Modbus map v2.1: IDENTITY->0x0000..0x0004, CONFIG->0x0010..0x0017, RUNTIME->0x0100..0x010E");
 }
@@ -2001,6 +2045,26 @@ static bool rs485_debug_set_forced_result(char* token) {
     return true;
 }
 
+static void rs485_debug_write_relay(char* addr_token, char* channel_token, char* value_token) {
+    if (!addr_token || !channel_token || !value_token) {
+        Serial.println("[RS485DBG] usage: rs485 relay <dst_hex> <channel_1_or_2> <0_or_1>");
+        return;
+    }
+
+    uint8_t dst = (uint8_t)strtoul(addr_token, nullptr, 0);
+    uint8_t channel = (uint8_t)strtoul(channel_token, nullptr, 0);
+    uint16_t value = (uint16_t)strtoul(value_token, nullptr, 0);
+    if (dst == 0 || channel < 1 || channel > 2 || value > 1) {
+        Serial.println("[RS485DBG] invalid relay command");
+        return;
+    }
+
+    uint16_t reg = channel == 1 ? RS485_MODBUS_REG_RELAY_1 : RS485_MODBUS_REG_RELAY_2;
+    bool ok = rs485_write_holding_register(dst, reg, value, "RELAY_DEBUG_DIRECT");
+    Serial.printf("[RS485DBG] relay dst=0x%02X channel=%u value=%u ok=%u\n",
+                  dst, channel, value, ok);
+}
+
 static void rs485_debug_process_line(char* line) {
     char* cmd = strtok(line, " \t");
     if (!cmd) return;
@@ -2083,6 +2147,14 @@ static void rs485_debug_process_line(char* line) {
         return;
     }
 
+    if (strcasecmp(sub, "relay") == 0) {
+        char* addr_token = strtok(nullptr, " \t");
+        char* channel_token = strtok(nullptr, " \t");
+        char* value_token = strtok(nullptr, " \t");
+        rs485_debug_write_relay(addr_token, channel_token, value_token);
+        return;
+    }
+
     if (strcasecmp(sub, "testforce") == 0) {
         char* result_token = strtok(nullptr, " \t");
         char* addr_token = strtok(nullptr, " \t");
@@ -2125,6 +2197,7 @@ static void rs485_poll_one_slave() {
     uint8_t address = 0;
     bool identity_due = false;
     bool capability_due = false;
+    bool sensor_poll_pending = false;
     uint32_t now = millis();
 
     data_lock(g_state);
@@ -2137,6 +2210,7 @@ static void rs485_poll_one_slave() {
         if (slave.uid != RS485_DUMMY_UI_UID) {
             slave_index = poll_index;
             address = slave.address;
+            sensor_poll_pending = slave.sensor_poll_pending;
             identity_due = !slave.identity_synced ||
                            now - slave.last_identity_ms >= RS485_IDENTITY_SYNC_INTERVAL_MS;
             capability_due = !slave.capability_synced ||
@@ -2160,6 +2234,12 @@ static void rs485_poll_one_slave() {
     }
 
     bool ok = false;
+    if (sensor_poll_pending) {
+        ok = rs485_poll_sensor_registers(address);
+        if (!ok) rs485_try_auto_recovery(slave_index);
+        return;
+    }
+
     if (identity_due) {
         ok = rs485_sync_identity_if_needed(address);
         if (!ok) rs485_try_auto_recovery(slave_index);

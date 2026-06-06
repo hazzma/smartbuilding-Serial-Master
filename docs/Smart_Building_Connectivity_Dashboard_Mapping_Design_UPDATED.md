@@ -576,6 +576,7 @@ Saat user klik salah satu slave dari Slave Manager, HMI SHALL open Slave Detail 
 Page ini digunakan untuk:
 - lihat identitas slave
 - edit nama slave
+- forget/delete slave dari registry master
 - lihat MAC/UID
 - lihat status online/offline
 - test komunikasi ke slave
@@ -658,8 +659,8 @@ Slave firmware does not need to permanently store user-facing name.
 Feature checklist / assignment rules:
 
 ```text
-1. UI SHALL show the supported logical feature types as master-side assignment options.
-2. The user SHALL select one Device Profile before SAVE.
+1. UI SHALL show Device Profile rows first.
+2. Before a profile is selected, UI MAY show all supported logical feature types as master-side assignment options.
 3. Checked item means the master assigned that feature/channel to that slave.
 4. Unchecked item means the feature/channel is not assigned by the master.
 5. Slave-reported capability registers SHALL NOT be treated as the owner of checkbox state.
@@ -668,11 +669,14 @@ Feature checklist / assignment rules:
 8. Profile policy SHALL be enforced by the master UI and RS485 manager, not by the slave.
 9. Lux is optional when the selected profile/hardware supports Lux.
 10. `IR_COMBO_NODE` SHALL allow AC 1, AC 2, and Projector together.
+11. Tapping an already-selected Device Profile SHALL unselect it and return that slave to `UNASSIGNED`.
+12. After a Device Profile is selected, UI SHALL hide non-profile feature rows that are outside the selected profile.
+13. DELETE SHALL remove MAC/address/profile/assignment for that slave from master NVS and clear dashboard mappings that reference the slave.
 ```
 
-What changed: feature selection is now profile-driven.
+What changed: feature selection is now profile-driven, profile rows are toggleable, irrelevant rows are hidden after profile selection, and registered slaves can be forgotten.
 Why it changed: V2.1 defines master-owned Device Profiles and leaves the slave policy-blind.
-Implementation effect: the checklist must enforce profile availability before SAVE so invalid assignment writes are not sent to the slave.
+Implementation effect: the checklist must enforce profile visibility/availability before SAVE so invalid assignment writes are not sent to the slave. Deleting a slave must also remove stale mapping references so the dashboard cannot keep using a forgotten UID/address.
 
 Recommended visible feature list:
 
@@ -927,7 +931,8 @@ Known-device automatic recovery:
 3. Recovery write is `247:0x00F4 length 4`.
 4. Master ignores Modbus response collision/error for this recovery write only.
 5. Master confirms recovery by polling the recovered assigned address.
-6. If the assigned address responds, the device becomes online again.
+6. Master writes the saved Device Profile / assignment registers back to the recovered slave.
+7. If the assigned address responds and assignment sync is issued, the device becomes online again with its previous role.
 ```
 
 Unknown-device discovery:
@@ -942,7 +947,7 @@ Unknown-device discovery:
 
 What changed: discovery is no longer assumed on every boot.
 Why it changed: saved slave mappings must survive restarts.
-Implementation effect: Slave Manager should show restored known slaves when recovery succeeds and only show pairing candidates when discovery is requested.
+Implementation effect: Slave Manager should show restored known slaves when recovery succeeds, restore their saved Device Profile/assignment automatically, and only show pairing candidates when discovery is requested.
 
 ---
 
@@ -1031,7 +1036,8 @@ Slave SHALL NOT persist address or capability configuration. After reboot, the s
 19. Known-device recovery SHALL use `247:0x00F4 length 4`, then confirm the assigned address.
 20. Unknown devices SHALL enter `UNPAIRED_DEVICE_DETECTED` until user pairing.
 21. Saved registry SHALL persist MAC, address, Device Profile, device name, and room.
-22. Last seen/status SHALL be runtime or low-frequency persisted fields.
+22. Saved registry DELETE SHALL forget that slave and clear mappings referencing its UID/address.
+23. Last seen/status SHALL be runtime or low-frequency persisted fields.
 ```
 
 ---

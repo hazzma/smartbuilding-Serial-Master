@@ -18,6 +18,8 @@ static bool dashboard_env_panel = false;
 static bool dashboard_dragging = false;
 static bool dashboard_moved = false;
 static int  dashboard_drag_start_y = 0;
+static uint8_t dashboard_ac_swing_mode = 0;
+static uint8_t dashboard_ac_fan_mode = 0;
 
 static char temp_lan_ip[16] = "192.168.1.177";
 static char temp_lan_gw[16] = "192.168.1.1";
@@ -285,12 +287,27 @@ static DashboardUiModel dashboard_make_ui_model(const BuildingState& state) {
 
 static void dashboard_draw_ac_widget(int x, int y, int w, int h, const DashboardUiModel& model) {
     drawAcTargetWidget(x, y, w, h, model.ac_target_temp, model.ac_on);
-    if (!model.ac_mirrors) return;
+    if (h < 180) return;
 
-    p_canvas->setTextDatum(TextDatum::TopLeft);
-    p_canvas->setTextFont(2);
+    static const char* SWING_MODES[] = {"AUTO", "UP", "MID", "DOWN"};
+    static const char* FAN_MODES[] = {"AUTO", "LOW", "MID", "HIGH"};
+    int button_y = y + h - 62;
+    int button_w = (w - 30) / 2;
+
+    drawCardBase(x + 10, button_y, button_w, 52, COLOR_CARD_BG);
+    drawCardBase(x + 20 + button_w, button_y, button_w, 52, COLOR_CARD_BG);
+
+    p_canvas->setTextDatum(TextDatum::MiddleCenter);
+    p_canvas->setTextFont(1);
     p_canvas->setTextColor(COLOR_TEXT_SEC);
-    p_canvas->drawString("AC1+AC2 mirror", x + 14, y + h - 18);
+    p_canvas->drawString("SWING", x + 10 + button_w / 2, button_y + 14);
+    p_canvas->drawString("FAN", x + 20 + button_w + button_w / 2, button_y + 14);
+
+    p_canvas->setTextFont(2);
+    p_canvas->setTextColor(COLOR_TEXT_MAIN);
+    p_canvas->drawString(SWING_MODES[dashboard_ac_swing_mode], x + 10 + button_w / 2, button_y + 36);
+    p_canvas->drawString(FAN_MODES[dashboard_ac_fan_mode], x + 20 + button_w + button_w / 2, button_y + 36);
+    p_canvas->setTextDatum(TextDatum::TopLeft);
 }
 
 static UiRect dashboard_menu_rect() {
@@ -456,11 +473,15 @@ void render_dashboard(BuildingState& state, int fps) {
         case DASH_LAYOUT_TEMP_COMPACT_WITH_CONTROLS: {
             if (model.has_ac && !model.has_projector && !model.has_led) {
                 drawLargeTempWidget(24, 104, 204, 124, model.avg_temp, true, false);
-                drawAcTargetWidget(252, 104, 204, 124, model.ac_target_temp, model.ac_on);
+                dashboard_draw_ac_widget(252, 104, 204, 124, model);
+            } else if (model.has_ac && model.has_projector && !model.has_led) {
+                dashboard_draw_ac_widget(18, 64, 216, 234, model);
+                drawLargeControlButton(306, 64, 136, 136, "Projector", model.projector_on);
+                drawLargeTempWidget(252, 214, 216, 84, model.avg_temp, true, false);
             } else {
                 if (model.has_ac) {
                     drawLargeTempWidget(24, 72, 204, 104, model.avg_temp, true, false);
-                    drawAcTargetWidget(252, 72, 204, 104, model.ac_target_temp, model.ac_on);
+                    dashboard_draw_ac_widget(252, 72, 204, 104, model);
                 } else {
                     drawLargeTempWidget(88, 72, 304, 104, model.avg_temp, true, false);
                 }
@@ -487,7 +508,7 @@ void render_dashboard(BuildingState& state, int fps) {
 
         case DASH_LAYOUT_SINGLE_CONTROL_CENTER:
             if (model.has_ac) {
-                drawAcTargetWidget(98, 88, 284, 150, model.ac_target_temp, model.ac_on);
+                dashboard_draw_ac_widget(98, 88, 284, 150, model);
             } else if (model.has_projector) {
                 drawLargeControlButton(72, 92, 336, 144, "Projector", model.projector_on);
             } else if (model.has_led) {
@@ -496,8 +517,11 @@ void render_dashboard(BuildingState& state, int fps) {
             break;
 
         case DASH_LAYOUT_MULTI_CONTROL_SPLIT:
-            if (model.has_ac) {
-                drawAcTargetWidget(24, 76, 206, 142, model.ac_target_temp, model.ac_on);
+            if (model.has_ac && model.has_projector && !model.has_led) {
+                dashboard_draw_ac_widget(18, 62, 224, 236, model);
+                drawLargeControlButton(258, 75, 210, 210, "Projector", model.projector_on);
+            } else if (model.has_ac) {
+                dashboard_draw_ac_widget(24, 76, 206, 142, model);
                 if (model.has_projector) {
                     drawLargeControlButton(250, 76, 206, 74, "Projector", model.projector_on);
                 }
@@ -1256,6 +1280,7 @@ static bool slave_has_other_main_enabled(const RS485SlaveState& slave, uint16_t 
 static bool slave_feature_available(const RS485SlaveState& slave, const FeatureRow& row) {
     if (row.profile_row) return true;
     if (slave.address == 0 && slave.uid == 0) return true;
+    if (slave.profile == DEVICE_PROFILE_UNASSIGNED) return true;
     if (!slave_profile_allows(slave, row.capability)) return false;
     if (row.capability == RS485_CAP_TEMP) {
         return row.channel < DASHBOARD_TEMP_SLOTS;
@@ -1265,9 +1290,10 @@ static bool slave_feature_available(const RS485SlaveState& slave, const FeatureR
 
 static bool slave_feature_available_for_state(const RS485State& rs485,
                                               uint8_t current_index,
-                                              const RS485SlaveState& slave,
-                                              const FeatureRow& row) {
+                                               const RS485SlaveState& slave,
+                                               const FeatureRow& row) {
     if (row.profile_row) {
+        if (slave_effective_profile(slave) == row.profile) return true;
         return profile_has_assignable_slots(rs485, current_index, row.profile);
     }
 
@@ -1282,8 +1308,43 @@ static bool slave_feature_available_for_state(const RS485State& rs485,
     return true;
 }
 
+static bool slave_feature_visible_for_state(const RS485SlaveState& slave, const FeatureRow& row) {
+    if (row.profile_row) return true;
+    if (slave.profile == DEVICE_PROFILE_UNASSIGNED) return true;
+
+    uint16_t allowed = device_profile_capability_mask(slave.profile);
+    return (allowed & row.capability) != 0;
+}
+
+static uint8_t slave_feature_visible_count_for_state(const RS485SlaveState& slave) {
+    uint8_t visible = 0;
+    for (uint8_t i = 0; i < slave_feature_total_count(); i++) {
+        if (slave_feature_visible_for_state(slave, SLAVE_FEATURE_ROWS[i])) visible++;
+    }
+    return visible == 0 ? 1 : visible;
+}
+
+static uint8_t slave_feature_total_pages_for_state(const RS485SlaveState& slave) {
+    uint8_t total = slave_feature_visible_count_for_state(slave);
+    uint8_t pages = (total + SLAVE_FEATURE_PAGE_ROWS - 1) / SLAVE_FEATURE_PAGE_ROWS;
+    return pages == 0 ? 1 : pages;
+}
+
+static const FeatureRow* slave_feature_visible_at(const RS485SlaveState& slave, uint8_t visible_index) {
+    uint8_t cursor = 0;
+    for (uint8_t i = 0; i < slave_feature_total_count(); i++) {
+        const FeatureRow& row = SLAVE_FEATURE_ROWS[i];
+        if (!slave_feature_visible_for_state(slave, row)) continue;
+        if (cursor == visible_index) return &row;
+        cursor++;
+    }
+    return nullptr;
+}
+
 static bool slave_feature_enabled(const RS485SlaveState& slave, const FeatureRow& row) {
-    if (row.profile_row) return slave_effective_profile(slave) == row.profile;
+    // Only an explicitly saved profile counts as selected. An inferred profile
+    // must remain tappable, otherwise the first tap clears all assignments.
+    if (row.profile_row) return slave.profile == row.profile;
     if (!slave_feature_available(slave, row)) return false;
     if (row.capability == RS485_CAP_TEMP) {
         return (slave.enabled_mask & RS485_CAP_TEMP) &&
@@ -1372,6 +1433,70 @@ static void slave_apply_profile_policy_for_state(RS485State& rs485,
             slave.enabled_mask |= RS485_CAP_TEMP;
         }
     }
+}
+
+static void slave_clear_profile_selection(RS485SlaveState& slave) {
+    slave.profile = DEVICE_PROFILE_UNASSIGNED;
+    slave.capability = 0;
+    slave.enabled_mask = 0;
+    slave.temp_available_mask = 0;
+    slave.temp_enabled_mask = 0;
+    slave.temp_count = 0;
+    slave.co2_count = 0;
+    slave.presence_count = 0;
+    slave.relay_count = 0;
+    slave.ir_count = 0;
+    slave.lux_count = 0;
+    slave.lcd_count = 0;
+}
+
+static void slave_reset_empty_slot(RS485SlaveState& slave) {
+    memset(&slave, 0, sizeof(slave));
+    strncpy(slave.name, "Device 0", sizeof(slave.name) - 1);
+    strncpy(slave.room, "Unassigned", sizeof(slave.room) - 1);
+    slave.profile = DEVICE_PROFILE_UNASSIGNED;
+    slave.registry_status = DEVICE_STATUS_UNKNOWN;
+}
+
+static void slave_forget_locked(BuildingState& state, uint8_t target_index) {
+    uint8_t count = state.rs485.slave_count;
+    if (count > RS485_MAX_SLAVES) count = RS485_MAX_SLAVES;
+    if (target_index >= count) return;
+
+    RS485SlaveState& target = state.rs485.slaves[target_index];
+    uint32_t uid = target.uid;
+    uint8_t address = target.address;
+    if (uid == 0 && address == 0) return;
+
+    for (uint8_t i = 0; i < DASHBOARD_LOGICAL_SLOT_COUNT; i++) {
+        LogicalMapping& mapping = state.rs485.mappings[i];
+        bool uid_match = uid != 0 && mapping.slave_uid == uid;
+        bool addr_match = uid == 0 && address != 0 && mapping.slave_addr == address;
+        if (!uid_match && !addr_match) continue;
+
+        mapping.slave_uid = 0;
+        mapping.slave_addr = 0;
+        mapping.channel = 0;
+        mapping.assigned = false;
+        mapping.manual_override = false;
+    }
+
+    if (count > 1) {
+        for (uint8_t i = target_index; i + 1 < count; i++) {
+            state.rs485.slaves[i] = state.rs485.slaves[i + 1];
+        }
+        slave_reset_empty_slot(state.rs485.slaves[count - 1]);
+        state.rs485.slave_count = count - 1;
+    } else {
+        slave_reset_empty_slot(state.rs485.slaves[0]);
+        state.rs485.slave_count = 1;
+    }
+
+    for (uint8_t i = 0; i < 2; i++) {
+        state.sensor.slave_online[i] = i < state.rs485.slave_count && state.rs485.slaves[i].online;
+    }
+    mapping_manager_update_locked(state);
+    state.ui_needs_update = true;
 }
 
 static void slave_mark_feature_assignable(RS485SlaveState& slave, const FeatureRow& feature) {
@@ -1710,7 +1835,7 @@ void render_slave_detail(BuildingState& state) {
         return;
     }
 
-    uint8_t total_pages = slave_feature_total_pages();
+    uint8_t total_pages = slave_feature_total_pages_for_state(slave);
     if (slave_feature_page >= total_pages) slave_feature_page = total_pages - 1;
     if (slave_feature_page < 0) slave_feature_page = 0;
 
@@ -1734,9 +1859,17 @@ void render_slave_detail(BuildingState& state) {
     p_canvas->setTextFont(4);
     p_canvas->setTextColor(COLOR_TEXT_MAIN);
     p_canvas->drawString(slave_display_name(slave), 34, 82);
+    if (!slave_detail_dummy && (slave.address != 0 || slave.uid != 0)) {
+        drawCardBase(254, 66, 84, 38, COLOR_STAT_ERR);
+    }
     drawCardBase(350, 66, 96, 38, COLOR_CARD_BG);
     p_canvas->setTextDatum(TextDatum::MiddleCenter);
     p_canvas->setTextFont(2);
+    if (!slave_detail_dummy && (slave.address != 0 || slave.uid != 0)) {
+        p_canvas->setTextColor(COLOR_TEXT_MAIN);
+        p_canvas->drawString("DELETE", 296, 85);
+    }
+    p_canvas->setTextColor(COLOR_TEXT_MAIN);
     p_canvas->drawString("EDIT", 398, 85);
     p_canvas->setTextDatum(TextDatum::TopLeft);
 
@@ -1759,12 +1892,14 @@ void render_slave_detail(BuildingState& state) {
     p_canvas->drawString("Device Profile / allowed rows", 24, 172);
 
     uint8_t first_feature = slave_feature_page * SLAVE_FEATURE_PAGE_ROWS;
-    uint8_t total_features = slave_feature_total_count();
+    uint8_t total_features = slave_feature_visible_count_for_state(slave);
     for (uint8_t row = 0; row < SLAVE_FEATURE_PAGE_ROWS; row++) {
-        uint8_t i = first_feature + row;
-        if (i >= total_features) break;
+        uint8_t visible_index = first_feature + row;
+        if (visible_index >= total_features) break;
 
-        const FeatureRow& feature = SLAVE_FEATURE_ROWS[i];
+        const FeatureRow* feature_ptr = slave_feature_visible_at(slave, visible_index);
+        if (!feature_ptr) break;
+        const FeatureRow& feature = *feature_ptr;
         int x = 20;
         int y = 190 + row * 31;
         bool available = slave_feature_available_for_state(state.rs485, detail_index, slave, feature);
@@ -2118,8 +2253,8 @@ void handle_dashboard_touch_legacy(BuildingState& state, int tx, int ty) {
         bool projector_power = false;
         bool light_power = false;
         data_lock(state);
-        if      (isHit(tx, ty, 20, 145, 95, 55))  { state.sensor.temp_target = min(30.0f, state.sensor.temp_target + 0.5f); send_ac = true; }
-        else if (isHit(tx, ty, 125, 145, 95, 55)) { state.sensor.temp_target = max(16.0f, state.sensor.temp_target - 0.5f); send_ac = true; }
+        if      (isHit(tx, ty, 20, 145, 95, 55))  { state.sensor.temp_target = min(30.0f, state.sensor.temp_target + 1.0f); send_ac = true; }
+        else if (isHit(tx, ty, 125, 145, 95, 55)) { state.sensor.temp_target = max(16.0f, state.sensor.temp_target - 1.0f); send_ac = true; }
         else if (isHit(tx, ty, 20, 210, 200, 50)) { state.sensor.ac_on        = !state.sensor.ac_on; send_ac = true; }
         else if (isHit(tx, ty, 240, 203, 110, 47)){ state.sensor.projector_on = !state.sensor.projector_on; send_projector = true; }
         else if (isHit(tx, ty, 362, 203, 110, 47)){ state.sensor.light_on     = !state.sensor.light_on; send_light = true; }
@@ -2151,6 +2286,8 @@ void handle_dashboard_touch(BuildingState& state, int tx, int ty) {
     } else if (model.layout == DASH_LAYOUT_TEMP_COMPACT_WITH_CONTROLS) {
         if (model.has_ac && !model.has_projector && !model.has_led) {
             temp_rect = {24, 104, 204, 124};
+        } else if (model.has_ac && model.has_projector && !model.has_led) {
+            temp_rect = {252, 214, 216, 84};
         } else if (model.has_ac) {
             temp_rect = {24, 72, 204, 104};
         } else {
@@ -2170,10 +2307,15 @@ void handle_dashboard_touch(BuildingState& state, int tx, int ty) {
         case DASH_LAYOUT_TEMP_COMPACT_WITH_CONTROLS:
             if (model.has_ac && !model.has_projector && !model.has_led) {
                 ac_rect = {252, 104, 204, 124};
+            } else if (model.has_ac && model.has_projector && !model.has_led) {
+                ac_rect = {18, 64, 216, 234};
+                projector_rect = {306, 64, 136, 136};
             } else if (model.has_ac) {
                 ac_rect = {252, 72, 204, 104};
             }
-            if (model.has_projector && model.has_led) {
+            if (model.has_ac && model.has_projector && !model.has_led) {
+                // Rects are assigned above for the dedicated elderly-friendly layout.
+            } else if (model.has_projector && model.has_led) {
                 projector_rect = {24, 190, 204, 104};
                 led_rect = {252, 190, 204, 104};
             } else if (model.has_projector) {
@@ -2190,7 +2332,10 @@ void handle_dashboard_touch(BuildingState& state, int tx, int ty) {
             break;
 
         case DASH_LAYOUT_MULTI_CONTROL_SPLIT:
-            if (model.has_ac) {
+            if (model.has_ac && model.has_projector && !model.has_led) {
+                ac_rect = {18, 62, 224, 236};
+                projector_rect = {258, 75, 210, 210};
+            } else if (model.has_ac) {
                 ac_rect = {24, 76, 206, 142};
                 if (model.has_projector) projector_rect = {250, 76, 206, 74};
                 if (model.has_led) led_rect = {250, 158, 206, 74};
@@ -2205,15 +2350,19 @@ void handle_dashboard_touch(BuildingState& state, int tx, int ty) {
     }
 
     if (ac_rect.w > 0) {
-        int btn_y = ac_rect.y + ac_rect.h - 44;
+        bool expanded_controls = ac_rect.h >= 180;
+        int btn_h = expanded_controls ? 52 : 34;
+        int btn_y = expanded_controls ? ac_rect.y + 90 : ac_rect.y + ac_rect.h - btn_h - 10;
         int btn_w = (ac_rect.w - 30) / 2;
         int chip_x = ac_rect.x + ac_rect.w - 88;
         int chip_y = ac_rect.y + 14;
-        int chip_h = btn_y - chip_y - 4;
+        int chip_h = expanded_controls ? 64 : btn_y - chip_y - 4;
         if (chip_h < 42) chip_h = 42;
         UiRect power_rect = {chip_x, chip_y, 74, chip_h};
-        UiRect up_rect = {ac_rect.x + 10, btn_y, btn_w, 34};
-        UiRect down_rect = {ac_rect.x + 20 + btn_w, btn_y, btn_w, 34};
+        UiRect up_rect = {ac_rect.x + 10, btn_y, btn_w, btn_h};
+        UiRect down_rect = {ac_rect.x + 20 + btn_w, btn_y, btn_w, btn_h};
+        UiRect swing_rect = {ac_rect.x + 10, ac_rect.y + ac_rect.h - 62, btn_w, 52};
+        UiRect fan_rect = {ac_rect.x + 20 + btn_w, ac_rect.y + ac_rect.h - 62, btn_w, 52};
 
         if (hit_rect(tx, ty, power_rect)) {
             bool ac_power = false;
@@ -2233,15 +2382,33 @@ void handle_dashboard_touch(BuildingState& state, int tx, int ty) {
             float ac_target = 0.0f;
             data_lock(state);
             if (hit_rect(tx, ty, up_rect)) {
-                state.sensor.temp_target = min(30.0f, state.sensor.temp_target + 0.5f);
+                state.sensor.temp_target = min(30.0f, state.sensor.temp_target + 1.0f);
             } else {
-                state.sensor.temp_target = max(16.0f, state.sensor.temp_target - 0.5f);
+                state.sensor.temp_target = max(16.0f, state.sensor.temp_target - 1.0f);
             }
             ac_power = state.sensor.ac_on;
             ac_target = state.sensor.temp_target;
             state.ui_needs_update = true;
             data_unlock(state);
             rs485_request_ac_command(ac_power, ac_target);
+            return;
+        }
+
+        if (expanded_controls && hit_rect(tx, ty, swing_rect)) {
+            dashboard_ac_swing_mode = (dashboard_ac_swing_mode + 1) % 4;
+            Serial.printf("[UI] Dummy AC swing mode: %u\n", dashboard_ac_swing_mode);
+            data_lock(state);
+            state.ui_needs_update = true;
+            data_unlock(state);
+            return;
+        }
+
+        if (expanded_controls && hit_rect(tx, ty, fan_rect)) {
+            dashboard_ac_fan_mode = (dashboard_ac_fan_mode + 1) % 4;
+            Serial.printf("[UI] Dummy AC fan mode: %u\n", dashboard_ac_fan_mode);
+            data_lock(state);
+            state.ui_needs_update = true;
+            data_unlock(state);
             return;
         }
     }
@@ -2762,14 +2929,33 @@ void handle_slave_detail_touch(BuildingState& state, int tx, int ty) {
         return;
     }
 
-    if (isHit(tx, ty, 350, 66, 96, 38) || isHit(tx, ty, 20, 56, 330, 58)) {
+    RS485SlaveState page_slave = {};
+    data_lock(state);
+    if (target_index < RS485_MAX_SLAVES) page_slave = state.rs485.slaves[target_index];
+    data_unlock(state);
+
+    if (!slave_detail_dummy && (page_slave.address != 0 || page_slave.uid != 0) &&
+        isHit(tx, ty, 254, 66, 84, 38)) {
+        data_lock(state);
+        slave_forget_locked(state, target_index);
+        slave_selected_index = 0;
+        slave_feature_page = 0;
+        data_unlock(state);
+        data_save_rs485_config(state);
+        screens_set(SCREEN_SLAVE_MANAGER);
+        return;
+    }
+
+    if (isHit(tx, ty, 350, 66, 96, 38) || isHit(tx, ty, 20, 56, 224, 58)) {
         editing_target = 7;
         keyboard_set_text(state.rs485.slaves[target_index].name);
         screens_set(SCREEN_KEYBOARD);
         return;
     }
 
-    uint8_t total_pages = slave_feature_total_pages();
+    uint8_t total_pages = slave_feature_total_pages_for_state(page_slave);
+    if (slave_feature_page >= total_pages) slave_feature_page = total_pages - 1;
+    if (slave_feature_page < 0) slave_feature_page = 0;
     if (total_pages > 1 && isHit(tx, ty, 144, 286, 190, 28)) {
         slave_feature_page = (slave_feature_page + 1) % total_pages;
         data_lock(state);
@@ -2779,11 +2965,13 @@ void handle_slave_detail_touch(BuildingState& state, int tx, int ty) {
     }
 
     uint8_t first_feature = slave_feature_page * SLAVE_FEATURE_PAGE_ROWS;
-    uint8_t total_features = slave_feature_total_count();
+    uint8_t total_features = slave_feature_visible_count_for_state(page_slave);
     for (uint8_t row = 0; row < SLAVE_FEATURE_PAGE_ROWS; row++) {
-        uint8_t i = first_feature + row;
-        if (i >= total_features) break;
-        const FeatureRow& feature = SLAVE_FEATURE_ROWS[i];
+        uint8_t visible_index = first_feature + row;
+        if (visible_index >= total_features) break;
+        const FeatureRow* feature_ptr = slave_feature_visible_at(page_slave, visible_index);
+        if (!feature_ptr) break;
+        const FeatureRow& feature = *feature_ptr;
         int y = 190 + row * 31;
         if (!isHit(tx, ty, 20, y, 440, 28)) continue;
 
@@ -2793,7 +2981,12 @@ void handle_slave_detail_touch(BuildingState& state, int tx, int ty) {
         bool enabled = slave_feature_enabled(slave, feature);
         if (available) {
             if (feature.profile_row) {
-                slave_apply_profile_policy_for_state(state.rs485, target_index, slave, feature.profile, true);
+                if (enabled) {
+                    slave_clear_profile_selection(slave);
+                } else {
+                    slave_apply_profile_policy_for_state(state.rs485, target_index, slave, feature.profile, true);
+                }
+                slave_feature_page = 0;
             } else if (feature.capability == RS485_CAP_TEMP) {
                 slave_mark_feature_assignable(slave, feature);
                 slave.enabled_mask |= RS485_CAP_TEMP;

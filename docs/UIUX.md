@@ -880,9 +880,14 @@ Checked means assigned/enabled by the master.
 Unchecked means not assigned by the master.
 
 When a Device Profile is selected:
-    Rows allowed by that profile become editable.
-    Rows not allowed by that profile become Unavailable.
-    The UI explains unavailability as "Profile locked".
+    Rows allowed by that profile become visible/editable.
+    Non-profile feature rows outside that profile are hidden from the normal row list.
+    Locked profile rows may still show as unavailable when another online slave already owns the exclusive role/slot.
+
+When the currently selected Device Profile is tapped again:
+    Clear the profile selection.
+    Clear master-owned enabled/checked rows for that slave.
+    Return the detail screen to UNASSIGNED state.
 
 If IR_COMBO_NODE is selected:
     AC 1, AC 2, and Projector rows are profile-valid.
@@ -983,9 +988,12 @@ Rename:
 
 Delete:
     remove the saved registry entry after confirmation
+    clear mappings that reference the deleted slave UID/address
+    stop automatic recovery for that slave until it is paired again
 
 Recover:
     run known-device recovery from the saved MAC/address/profile
+    after recovery, write the saved profile assignment registers back to the slave
 
 Re-Pair:
     start a user-confirmed pairing flow for the saved device and rewrite v2.1 configuration

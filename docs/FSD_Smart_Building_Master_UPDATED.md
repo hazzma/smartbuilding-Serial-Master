@@ -1478,6 +1478,8 @@ Per slave contract v2.1, all slaves SHALL boot on address `247` because slave co
 
 Master SHALL persist the MAC address to assigned-address mapping locally. On slave reboot, the master SHALL be able to restore a known slave by writing the saved MAC and address to recovery registers at address `247`.
 
+Master SHALL also persist the selected Device Profile and assignment state for each known slave. After successful known-device recovery, master SHALL write the saved assignment registers back to the recovered slave before treating the device as fully restored for dashboard use.
+
 Firmware V2 startup rule:
 - START.
 - Check saved slave registry.
@@ -1552,6 +1554,7 @@ Automatic recovery for a known offline device:
 6. Non-matching slaves ignore the recovery command and remain on 247
 7. Master ignores Modbus response collision/error for this recovery write only
 8. Master confirms recovery by polling the recovered assigned address
+9. Master reapplies the saved Device Profile / assignment registers `0x0010..0x0017`
 ```
 
 Recovery registers:
@@ -2084,17 +2087,20 @@ Assignment rules:
 ```text
 Supported profile rows SHALL default to Available before selection.
 Selecting a Device Profile SHALL determine which capability rows are enabled for that slave.
+Selecting an already-selected Device Profile SHALL clear the selected profile and return the slave configuration to `UNASSIGNED`.
+After a Device Profile is selected, non-profile feature rows outside the selected profile SHALL be hidden from the normal configuration list rather than shown as clutter.
 IR_COMBO_NODE SHALL allow AC 1, AC 2, and Projector together.
 Lux SHALL remain an optional auxiliary sensor when the selected profile/hardware supports Lux.
 Checked state is master-owned and persisted in master NVS.
 SAVE SHALL write the selected Firmware V2.1 profile/configuration to the selected slave using the agreed slave contract registers.
+DELETE SHALL remove the slave from the master saved registry and clear dashboard mappings that reference the slave UID/address. A deleted slave SHALL NOT auto-recover again until it is paired again.
 ```
 
-What changed: Firmware V2.1 uses Device Profile enforcement instead of a generic one-main-sensor rule. Dashboard temperature slots may still remain globally unique, but that is a mapping constraint, not slave policy.
+What changed: Firmware V2.1 uses Device Profile enforcement instead of a generic one-main-sensor rule. Selected profiles now filter the feature list, profile rows are toggleable back to `UNASSIGNED`, and saved slaves can be forgotten from the registry. Dashboard temperature slots may still remain globally unique, but that is a mapping constraint, not slave policy.
 
 Why it changed: master-owned profiles can prevent invalid combinations while intentionally allowing production profiles such as `IR_COMBO_NODE`.
 
-Implementation effect: the Slave Detail screen needs profile-driven enabled/unavailable states, and mapping screens may separately prevent two sources from owning the same dashboard slot.
+Implementation effect: the Slave Detail screen needs profile-driven row visibility, enabled/unavailable states, delete/forget handling, and mapping screens may separately prevent two sources from owning the same dashboard slot.
 
 Recommended configuration screen:
 
@@ -2174,6 +2180,7 @@ Master SHALL remain source of truth.
 Firmware V2 startup behavior:
 - Master SHALL first check saved slave data.
 - If saved slave data exists, master SHALL try reconnect/recovery.
+- If recovery succeeds, master SHALL reapply the saved Device Profile and assignment state to the slave.
 - If no saved slave data exists, master SHALL not auto-assign or auto-discover slaves.
 
 What changed: reset/startup recovery is saved-state-driven instead of always starting from fresh pairing.
