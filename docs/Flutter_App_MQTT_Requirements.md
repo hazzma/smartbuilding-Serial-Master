@@ -23,7 +23,7 @@ Implementation effect:
 
 Changed:
 - Topic MQTT utama sekarang mengikuti format class/room + data type.
-- Contoh seperti `Class HD01 co2` dan `Class LA2 suhu` adalah contoh naming, bukan hardcoded value.
+- Format runtime Firmware V2.5 adalah `<class_name>/<data_type>`.
 
 Why:
 - User dan dashboard perlu melihat data berdasarkan ruang/class dan jenis data secara langsung.
@@ -32,34 +32,35 @@ Implementation effect:
 - App harus mengizinkan konfigurasi class/room display name.
 - Jika class/room name berubah, app dan firmware harus regenerate default topic labels/templates dari nama tersebut.
 - App tidak boleh menganggap semua data datang dari satu topic state master.
-- Topic final tetap harus mengikuti konfigurasi broker/master/app yang disepakati proyek.
+- App harus membentuk topic dari class name yang sama dengan master.
 
-Example publish topics, not hardcoded values:
-- `Class HD01 suhu`
-- `Class HD01 co2`
-- `Class HD01 lux`
-- `Class HD01 presence`
-- `Class HD01 led`
+Exact publish topics for class `HD01`:
+- `HD01/suhu`
+- `HD01/co2`
+- `HD01/lux`
+- `HD01/human`
+- `HD01/led`
 
-Example subscribe/control topics, not hardcoded values:
-- `Class HD01 led`
-- `Class HD01 ac`
-- `Class HD01 projector`
+Exact subscribe/control topics for class `HD01`:
+- `HD01/led`
+- `HD01/ac`
+- `HD01/projector`
 
 Class name examples:
-- If class/room name is `HD01`, default topic labels are derived as `Class HD01 <data_type>`.
-- If class/room name is `LA2`, default topic labels are derived as `Class LA2 <data_type>`.
-- Example: `Class LA2 co2`, `Class LA2 suhu`, `Class LA2 led`.
+- If class/room name is `HD01`, default topic labels are derived as `HD01/<data_type>`.
+- If class/room name is `LA2`, default topic labels are derived as `LA2/<data_type>`.
+- Example: `LA2/co2`, `LA2/suhu`, `LA2/led`.
 
 Topic naming rule:
-- Topic SHOULD clearly identify the class/room.
-- Topic SHOULD clearly identify the sensor or actuator type.
-- Topic examples in this document are examples only, not final broker configuration.
+- Topic SHALL use `<class_name>/<data_type>`.
+- Class name comes from the editable and persisted master class name.
+- Supported data type suffixes are `suhu`, `co2`, `lux`, `human`, `led`, `ac`,
+  `projector`, and `master`.
 
 Direction rule:
-- Publish/state topics and subscribe/command topics MUST be distinguishable in the final MQTT configuration.
-- The labels above are human-readable examples. Final broker topics may use suffixes such as `/state` and `/cmd`, separate configured topic strings, or another documented convention.
-- If a development build uses the same literal topic for command and state, firmware MUST guard against self-echo and MUST NOT treat its own confirmed state publish as a new command.
+- Firmware V2.5 uses the same literal actuator topic for state and command.
+- Firmware MUST guard against self-echo and MUST NOT treat its own confirmed
+  state publish as a new command.
 
 ---
 
@@ -191,15 +192,15 @@ Implementation effect:
 - Flutter app should consider the command resolved only after the relevant topic publishes updated state or command-result status.
 - Firmware must route actuator commands to the slave that owns the actuator.
 
-Example subscribe/control topics, not hardcoded values:
-- `Class HD01 led`
-- `Class HD01 ac`
-- `Class HD01 projector`
+Exact subscribe/control topics for class `HD01`:
+- `HD01/led`
+- `HD01/ac`
+- `HD01/projector`
 
 Direction rule:
-- These are actuator command topic labels, not necessarily the same literal MQTT topics as actuator state publish topics.
-- Final implementation SHOULD configure command and state topics separately, or use a clearly documented suffix convention such as `/cmd` and `/state`.
-- If the same literal topic is temporarily used, the master MUST ignore confirmed state payloads in its command handler and the app MUST not treat command echoes as confirmed state.
+- These are the same literal topics used by the master to publish actuator state.
+- The master MUST ignore confirmed state payload shapes in its command handler,
+  and the app MUST not treat its own command echo as confirmed state.
 
 Command flow:
 1. Flutter app publishes actuator command to the selected class/room actuator topic.
@@ -282,7 +283,7 @@ Settings / Device Info requirements:
 - Device Info SHALL show firmware version, for example `Firmware V2`.
 - Device Info SHALL show `Firmware By Hansel Kay CE LAB`.
 - Device Info SHALL allow editing class/room name.
-- Editing class/room name SHALL update default topic labels/templates, for example `HD01` -> `Class HD01 co2` and `LA2` -> `Class LA2 co2`.
+- Editing class/room name SHALL update default topic labels/templates, for example `HD01` -> `HD01/co2` and `LA2` -> `LA2/co2`.
 
 Home SHOULD show:
 - Temperature positions 1-4 from the temperature JSON topic.

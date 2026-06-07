@@ -2,7 +2,11 @@
 #include "mapping_manager.h"
 #include <Preferences.h>
 #include <string.h>
+
+#if __has_include("mqtt_secrets.h")
 #include "mqtt_secrets.h"
+#endif
+#include "mqtt_defaults.h"
 
 BuildingState g_state;
 

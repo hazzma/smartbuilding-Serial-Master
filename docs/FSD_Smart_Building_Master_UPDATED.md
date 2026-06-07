@@ -40,7 +40,8 @@ Firmware V2 updates the system contract around three simple ideas: saved-slave r
 
 What changed:
 - Startup SHALL check saved slave configuration first. If saved slave data exists, the master SHALL try to reconnect those slaves. If no saved slave data exists, the master SHALL do nothing until the user starts discovery.
-- MQTT publish SHALL be split per data type. Example topic labels such as `Class HD01 suhu` and `Class HD01 co2` are examples generated from editable class/room name, not hardcoded values.
+- MQTT publish SHALL be split per data type. Runtime topics such as `HD01/suhu`
+  and `HD01/co2` are generated from the editable class/room name.
 - MQTT subscribe SHALL use actuator command topics such as LED, AC, and projector.
 - LED payload SHALL be JSON because it carries ON/OFF state for 4 LED positions.
 - Temperature payload SHALL be JSON because it carries 4 DHT22 readings.
@@ -115,7 +116,7 @@ Hardware:
 MQTT Broker (EMQX)
        |
        | Firmware V2 per-sensor publish topics
-       | examples: Class HD01 suhu / Class HD01 co2 / Class HD01 led
+       | examples: HD01/suhu / HD01/co2 / HD01/led
        v
 MQTT Manager
        |
@@ -933,7 +934,9 @@ WiFi scan SHALL be advanced only from Task_Net, never from UI/touch handlers.
 
 ## 10.1 MQTT Configuration, Identity, and Payload Contract
 
-Current hardcoded MQTT fields SHALL be treated as development defaults only. Production MQTT behavior SHALL be driven by saved configuration.
+Firmware V2.5 SHALL ship with the SmartClass_serverless EMQX deployment as its
+default MQTT preset. Saved MQTT configuration in NVS/Preferences overrides this
+default after the user edits MQTT Setup.
 
 ### 10.1.0 Firmware V2 MQTT Model
 
@@ -941,8 +944,8 @@ Firmware V2 primary MQTT model SHALL be topic-per-data-type, not one combined ma
 
 What changed:
 - The master SHALL publish each sensor/control state type to its own configured topic.
-- Example publish topic labels: `Class HD01 suhu`, `Class HD01 co2`, `Class HD01 led`.
-- Example subscribe topic labels: `Class HD01 led`, `Class HD01 ac`, `Class HD01 projector`.
+- Exact publish topics for class `HD01`: `HD01/suhu`, `HD01/co2`, `HD01/led`, and the other supported data-type suffixes.
+- Exact subscribe topics for class `HD01`: `HD01/led`, `HD01/ac`, `HD01/projector`.
 - Simple/general sensor payloads SHALL be integer values.
 - LED payload SHALL be JSON because it must synchronize 4 LED ON/OFF positions.
 - Temperature payload SHALL be JSON because it must carry 4 DHT22 temperature readings.
@@ -958,7 +961,8 @@ Implementation effect:
 - MQTT setup must support topic templates or per-topic configuration for the room/class.
 - MQTT manager must publish different payload types depending on the data type.
 - Command handling must distinguish requested state from confirmed state.
-- Publish/state topics and subscribe/command topics must be distinguishable in final configuration, even when their human-readable labels look similar.
+- Firmware V2.5 uses the same literal actuator topic for state and command and
+  must keep its self-echo payload guards enabled.
 - The old combined JSON state payload is Legacy / V1 compatibility unless a later agent explicitly keeps it as an additional diagnostic topic.
 
 ### 10.1.1 Persistent MQTT Setup
@@ -996,6 +1000,21 @@ key: mqtt_pass
 
 The V2.4 MQTT Setup screen implements the connection subset above. Presets, editable topic templates, preferred network, and publish interval remain future extensions.
 
+Firmware V2.5 default connection preset:
+
+```text
+deployment: SmartClass_serverless
+broker_host: wd5de919.ala.asia-southeast1.emqxsl.com
+mqtt_tls_port: 8883
+websocket_tls_port: 8084
+username: Hansganteng
+password: 12345678
+publish_interval_sec: 5
+```
+
+The ESP32 firmware uses MQTT over TLS on port `8883`. WebSocket TLS port `8084`
+is documented for web clients and is not used by the firmware PubSubClient.
+
 Rules:
 - Saved config SHALL survive reboot and firmware soft reset.
 - Password SHALL be editable but hidden by default in UI.
@@ -1005,8 +1024,8 @@ Rules:
 - Publish rate SHALL be editable from MQTT Setup as seconds, using a numeric keyboard/input field.
 - Firmware SHALL clamp publish rate to a safe range, recommended `1..3600` seconds, then convert to milliseconds internally for scheduling.
 - Firmware V2 SHALL store an editable class/room name and MAY derive topic labels from it.
-- If class/room name is `HD01`, derived example labels become `Class HD01 co2`, `Class HD01 suhu`, `Class HD01 led`, `Class HD01 ac`, and `Class HD01 projector`.
-- If class/room name changes to `LA2`, derived example labels become `Class LA2 co2`, `Class LA2 suhu`, `Class LA2 led`, `Class LA2 ac`, and `Class LA2 projector`.
+- If class/room name is `HD01`, generated runtime topics become `HD01/co2`, `HD01/suhu`, `HD01/led`, `HD01/ac`, and `HD01/projector`.
+- If class/room name changes to `LA2`, generated runtime topics become `LA2/co2`, `LA2/suhu`, `LA2/led`, `LA2/ac`, and `LA2/projector`.
 - Explicit per-topic overrides MAY exist later, but the first V2 behavior should keep the class-name-derived template as the simple default.
 - Legacy single `publish_topic` and `subscribe_topic` fields MAY be kept only for migration/diagnostic compatibility.
 
@@ -1071,15 +1090,17 @@ Class/room name SHALL drive the default MQTT topic labels. Device name SHALL be 
 
 ### 10.1.4 MQTT Publish Format - Firmware V2 Primary
 
-The master SHALL publish by data type. Topic names below are human-readable examples only, not final hardcoded values.
+The master SHALL publish by data type using the exact runtime template
+`<class_name>/<data_type>`. The following table shows the resulting topics for
+class `HD01`.
 
 | Example publish/state topic label | Payload rule | Purpose |
 |---|---|---|
-| `Class HD01 suhu` | JSON | Four DHT22 temperature readings and optional average. |
-| `Class HD01 co2` | Integer | CO2 ppm value. |
-| `Class HD01 lux` | Integer | Lux value when available. |
-| `Class HD01 human` | Integer | Presence state such as `0` or `1`. |
-| `Class HD01 led` | JSON | Four LED ON/OFF states for synchronization. |
+| `HD01/suhu` | JSON | Four DHT22 temperature readings and optional average. |
+| `HD01/co2` | Integer | CO2 ppm value. |
+| `HD01/lux` | Integer | Lux value when available. |
+| `HD01/human` | Integer | Presence state such as `0` or `1`. |
+| `HD01/led` | JSON | Four LED ON/OFF states for synchronization. |
 
 What changed: this replaces the previous single combined state JSON as the primary MQTT requirement.
 
@@ -1087,7 +1108,9 @@ Why it changed: each app screen or dashboard widget can subscribe only to the da
 
 Implementation effect: firmware must publish simple sensors as integers and structured multi-position data as JSON.
 
-Direction rule: actuator state publish topics and actuator command subscribe topics SHALL be separate configured topics or use a documented suffix convention such as `/state` and `/cmd`. If a development build temporarily uses the same literal topic, firmware SHALL ignore its own state payloads in the command handler to avoid self-echo loops.
+Direction rule: Firmware V2.5 uses the same literal actuator topic for state
+publish and command subscribe. Firmware SHALL ignore its own state payload
+shapes in the command handler to avoid self-echo loops.
 
 ### 10.1.4.1 Legacy / V1 Combined State JSON
 
@@ -1176,13 +1199,14 @@ Publish triggers:
 
 ### 10.1.5 MQTT Subscribe Command Format - Firmware V2 Primary
 
-The master SHALL subscribe to actuator command topics. Topic names below are human-readable examples only, not final hardcoded values.
+The master SHALL subscribe to actuator command topics generated by the exact
+runtime template `<class_name>/<data_type>`.
 
 | Example subscribe/command topic label | Command payload rule | Behavior |
 |---|---|---|
-| `Class HD01 led` | JSON command | Forward LED command to target slave, wait for confirmation, publish LED JSON state. |
-| `Class HD01 ac` | JSON command | Forward AC command to target slave, wait for confirmation, publish latest AC state. |
-| `Class HD01 projector` | JSON command | Forward projector command to target slave, wait for confirmation, publish latest projector state. |
+| `HD01/led` | JSON command | Forward LED command to target slave, wait for confirmation, publish LED JSON state. |
+| `HD01/ac` | JSON command | Forward AC command to target slave, wait for confirmation, publish latest AC state. |
+| `HD01/projector` | JSON command | Forward projector command to target slave, wait for confirmation, publish latest projector state. |
 
 What changed: command handling is topic-based and confirmation-based.
 
@@ -1281,9 +1305,11 @@ Info screen SHALL include:
 
 Class topic effect:
 - Editing class/room name SHALL update the default MQTT topic labels derived from that class name.
-- Example: class `HD01` derives labels such as `Class HD01 co2`, `Class HD01 suhu`, `Class HD01 led`.
-- Example: class `LA2` derives labels such as `Class LA2 co2`, `Class LA2 suhu`, `Class LA2 led`.
-- Topic examples are labels/templates, not hardcoded broker constants; production topics may still add suffixes such as `/state` or `/cmd` if the MQTT setup requires separate state and command topics.
+- Example: class `HD01` derives labels such as `HD01/co2`, `HD01/suhu`, `HD01/led`.
+- Example: class `LA2` derives labels such as `LA2/co2`, `LA2/suhu`, `LA2/led`.
+- Firmware V2.5 generates the exact runtime topic from
+  `<class_name>/<data_type>`. Actuator state and commands currently share the
+  same topic with self-echo guards.
 
 ---
 
@@ -1905,7 +1931,7 @@ System-level requirements:
 - LAN Setup SHALL expose DHCP/STATIC mode, current link/status, editable static IPv4 fields, and save action using large touch targets.
 - Slave Manager SHALL remain the entry point for discovery, pairing, polling, diagnostics, and detail/mapping navigation.
 - Settings Page 2 SHALL open dedicated MQTT Setup and Device Info screens. MQTT connection fields and device identity fields SHALL be saved dynamically to NVS/Preferences.
-- Editing class/room name in Settings Page 2 SHALL update default MQTT topic labels generated by the class template, for example `Class HD01 co2` or `Class LA2 co2`.
+- Editing class/room name in Settings Page 2 SHALL update default MQTT topic labels generated by the class template, for example `HD01/co2` or `LA2/co2`.
 
 Detailed visual layout for these surfaces SHOULD be kept in `docs/UIUX.md` or the connectivity mapping design document where applicable; this FSD SHALL avoid duplicating full screen mockups unless required for system behavior.
 

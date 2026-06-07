@@ -1,9 +1,7 @@
-#ifndef MQTT_SECRETS_EXAMPLE_H
-#define MQTT_SECRETS_EXAMPLE_H
+#ifndef MQTT_DEFAULTS_H
+#define MQTT_DEFAULTS_H
 
-// Optional local override. Copy this file to src/mqtt_secrets.h and edit it
-// only when the deployment must use credentials different from mqtt_defaults.h.
-
+#ifndef MQTT_SERVER_DEFAULT
 #define MQTT_SERVER_DEFAULT       "wd5de919.ala.asia-southeast1.emqxsl.com"
 #define MQTT_PORT_SECURE_DEFAULT  8883
 #define MQTT_PORT_NORMAL_DEFAULT  1883
@@ -14,5 +12,6 @@
 #define MQTT_DEVICE_NAME_DEFAULT  "Meeting Room Master"
 #define MQTT_FW_VERSION_DEFAULT   "2.5.0"
 #define MQTT_PUBLISH_INTERVAL_MS  5000
+#endif
 
 #endif

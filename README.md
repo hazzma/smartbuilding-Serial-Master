@@ -25,12 +25,12 @@ Why: The new model keeps the app simpler, makes each sensor stream easier to sub
 Implementation effect:
 
 - Startup checks saved slave configuration first. If saved slaves exist, the master tries to reconnect them. If no saved slave exists, it stays idle until the user starts discovery.
-- MQTT publishes per data type, for example `Class HD01 suhu` and `Class HD01 co2`.
+- MQTT publishes per data type, for example `HD01/suhu` and `HD01/co2`.
 - Simple sensor topics use integer payloads.
 - LED uses JSON because it carries ON/OFF state for 4 LED positions.
 - Temperature uses JSON because it carries 4 DHT22 readings.
 - MQTT delivery defaults are simple sensors QoS 0 retain true, temperature QoS 0 retain true, LED state QoS 1 retain true, actuator commands QoS 1 retain false, and master status QoS 1 retain true.
-- Control topics are subscribed separately, for example `Class HD01 led`, `Class HD01 ac`, and `Class HD01 projector`.
+- Control topics are subscribed separately, for example `HD01/led`, `HD01/ac`, and `HD01/projector`.
 - After an actuator command is confirmed by the target slave, the master republishes the related state topic so the app can synchronize.
 - Slave selection follows the v2.1 Device Profile model.
 
@@ -150,16 +150,16 @@ flowchart TD
     MQTTConnect --> Subscribe[Subscribe actuator command topics]
     MQTTConnect --> Publish[Publish per-sensor topics]
 
-    Publish --> TempTopic["Example: Class HD01 suhu JSON"]
-    Publish --> CO2Topic["Example: Class HD01 co2 integer"]
-    Publish --> LEDTopic["Example: Class HD01 led JSON state"]
+    Publish --> TempTopic["Example: HD01/suhu JSON"]
+    Publish --> CO2Topic["Example: HD01/co2 integer"]
+    Publish --> LEDTopic["Example: HD01/led JSON state"]
     TempTopic --> Flutter[Flutter App Dashboard]
     CO2Topic --> Flutter
     LEDTopic --> Flutter
 
-    Flutter --> LEDCommand["Example: Class HD01 led command"]
-    Flutter --> ACCommand["Example: Class HD01 ac command"]
-    Flutter --> ProjectorCommand["Example: Class HD01 projector command"]
+    Flutter --> LEDCommand["Example: HD01/led command"]
+    Flutter --> ACCommand["Example: HD01/ac command"]
+    Flutter --> ProjectorCommand["Example: HD01/projector command"]
     LEDCommand --> Subscribe
     ACCommand --> Subscribe
     ProjectorCommand --> Subscribe
@@ -169,7 +169,10 @@ flowchart TD
     Confirm -->|No| RetryOrError[Keep previous state or report error]
 ```
 
-Example topic names above are examples, not hardcoded final values. Production topic names are configured through MQTT setup. Firmware V2 requires one publish topic per sensor/control state type and distinguishable subscribe topics for actuator commands. If the same human-readable label is used for state and command, the final MQTT topic configuration still needs a direction convention such as separate topic strings, `/state` and `/cmd` suffixes, or an explicitly documented self-echo guard.
+Firmware V2.5 generates these exact runtime topics from the saved class name using
+`<class_name>/<data_type>`. Actuator state and command traffic currently share
+the same `led`, `ac`, and `projector` topics; the firmware command handler guards
+against processing its own state publishes.
 
 ## Connectivity Flow - RS485 Modbus
 

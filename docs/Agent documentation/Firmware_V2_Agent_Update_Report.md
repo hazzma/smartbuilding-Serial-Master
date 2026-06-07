@@ -57,7 +57,7 @@ Edited files:
 - `docs/FSD_Smart_Building_Master_UPDATED.md`
 
 Open items:
-- [ ] Final production MQTT topic strings still need team approval. Docs now require state and command directions to be distinguishable, either through separate topic strings, `/state` and `/cmd` suffixes, or another documented convention.
+- [x] Firmware V2.5 production topic format is finalized as `<class_name>/<data_type>`.
 - [ ] Final invalid/stale representation for integer MQTT topics should be confirmed before implementation.
 
 ---
@@ -70,17 +70,17 @@ Scope:
 
 Completed:
 - [x] `docs/Flutter_App_MQTT_Requirements.md` now describes Firmware V2 as per-topic MQTT.
-- [x] Example publish topics are labeled as examples, not hardcoded values.
+- [x] Exact runtime publish topics are documented using `<class_name>/<data_type>`.
 - [x] General/simple sensor values use integer payloads.
 - [x] Temperature uses JSON for 4 fixed DHT22 positions.
 - [x] LED uses JSON for 4 ON/OFF positions.
 - [x] Subscribe/control examples include LED, AC, and Projector.
 - [x] Command flow is documented as: app command -> master -> target slave -> confirmation -> republish state.
 - [x] Old single master state JSON is retained only as Legacy / V1 Notes.
-- [x] MQTT state topic labels and command topic labels are documented as examples only; final topics must distinguish publish/state direction from subscribe/command direction.
+- [x] MQTT actuator state and command traffic use the same literal topic with firmware self-echo guards.
 - [x] Temperature and LED JSON examples no longer include documentation metadata as payload fields.
 - [x] AC and Projector command payloads are now documented as JSON.
-- [x] Class/room naming now drives default topic labels such as `Class HD01 co2` and `Class LA2 co2`.
+- [x] Class/room naming now drives default topic labels such as `HD01/co2` and `LA2/co2`.
 - [x] MQTT QoS/retain policy is documented: simple sensors QoS 0 retain true, temperature QoS 0 retain true, LED state QoS 1 retain true, actuator commands QoS 1 retain false, master status QoS 1 retain true.
 
 Edited files:
@@ -139,7 +139,8 @@ Edited files:
 
 Open items:
 - [ ] Final Flutter visual design and detailed widget layout are still implementation tasks.
-- [ ] Device discovery UX over MQTT should be refined after final topic naming is approved.
+- [ ] Device discovery UX over MQTT may be refined while keeping the finalized
+  `<class_name>/<data_type>` topic naming.
 
 ---
 
@@ -408,7 +409,8 @@ MQTT:
 - Simple sensor payloads are integers.
 - Temperature payload is JSON with 4 DHT22 positions.
 - LED payload is JSON with 4 ON/OFF positions.
-- Topic names like `Class HD01 suhu` are examples generated from editable class/room name, not hardcoded production values.
+- Runtime topic names like `HD01/suhu` are generated from the editable
+  class/room name using `<class_name>/<data_type>`.
 
 Flutter app:
 - App should render Home, Devices, and Settings.

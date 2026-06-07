@@ -160,15 +160,15 @@ Class/room name behavior:
 ```text
 If class name = HD01:
     generated topic labels include:
-    Class HD01 co2
-    Class HD01 suhu
-    Class HD01 led
+    HD01/co2
+    HD01/suhu
+    HD01/led
 
 If class name = LA2:
     generated topic labels include:
-    Class LA2 co2
-    Class LA2 suhu
-    Class LA2 led
+    LA2/co2
+    LA2/suhu
+    LA2/led
 ```
 
 What changed: Settings Page 2 now acts as an entry page for dedicated MQTT Setup and Device Info screens. MQTT Setup displays the full active connection summary before any edit action.

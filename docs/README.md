@@ -7,13 +7,15 @@ Use these documents as the current source of truth for Smart Building Firmware V
 - `Smart_Building_RS485_Modbus_Architecture.md` - active RS485 Modbus architecture.
 - `Smart_Building_Connectivity_Dashboard_Mapping_Design_UPDATED.md` - Slave Manager, feature assignment, and dashboard mapping behavior.
 - `Flutter_App_MQTT_Requirements.md` - Flutter app MQTT requirements. Firmware V2 now uses per-sensor publish topics and actuator command topics; this file must stay aligned with the FSD.
+- `MQTT_V2.5_Changelog.md` - exact V2.5 runtime topic format, EMQX defaults, and compatibility notes.
 - `From_SLave/RS485_Modbus_Slave_Firmware_Contract v2.md` - current agreed slave wire contract v2.1.0.
 
 Important Firmware V2 rules:
 
 - Startup flow is `START -> Check Saved Slave -> Try reconnect if saved slave exists -> Else do nothing`.
 - Discovery/pairing is for new or recovered slaves, not a mandatory assignment step on every boot.
-- MQTT publishes each data type to its own topic, for example `Class HD01 suhu` and `Class HD01 co2`. These names are examples generated from editable class/room name, not hardcoded final values.
+- MQTT publishes each data type using the exact V2.5 runtime template
+  `<class_name>/<data_type>`, for example `HD01/suhu` and `HD01/co2`.
 - Simple sensor payloads use integers. Temperature uses JSON for 4 DHT22 readings. LED uses JSON for 4 LED ON/OFF positions.
 - MQTT subscribes to actuator control topics such as LED, AC, and projector. After the target slave confirms the new state, the master republishes the related state topic for app synchronization.
 - MQTT QoS/retain defaults: simple sensors QoS 0 retain true; temperature JSON QoS 0 retain true; LED state QoS 1 retain true; actuator commands QoS 1 retain false; master status QoS 1 retain true.

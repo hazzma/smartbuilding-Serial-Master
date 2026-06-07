@@ -10,19 +10,7 @@
 #if __has_include("mqtt_secrets.h")
 #include "mqtt_secrets.h"
 #endif
-
-#ifndef MQTT_SERVER_DEFAULT
-#define MQTT_SERVER_DEFAULT       "your-broker.example.com"
-#define MQTT_PORT_SECURE_DEFAULT  8883
-#define MQTT_PORT_NORMAL_DEFAULT  1883
-#define MQTT_USER_DEFAULT         ""
-#define MQTT_PASS_DEFAULT         ""
-#define MQTT_TOPIC_SUB_DEFAULT    "smartbuilding/master/command"
-#define MQTT_TOPIC_PUB_DEFAULT    "smartbuilding/master/state"
-#define MQTT_DEVICE_NAME_DEFAULT  "Meeting Room Master"
-#define MQTT_FW_VERSION_DEFAULT   "V2"
-#define MQTT_PUBLISH_INTERVAL_MS  5000
-#endif
+#include "mqtt_defaults.h"
 
 // const char* mqtt_server       = MQTT_SERVER_DEFAULT;
 const int   mqtt_port_secure  = MQTT_PORT_SECURE_DEFAULT;
@@ -71,7 +59,7 @@ static void mqtt_build_topic_locked(MqttTopicKind kind, char* out, size_t out_le
         case MQTT_TOPIC_PROJECTOR: suffix = "projector"; break;
         case MQTT_TOPIC_MASTER: suffix = "master"; break;
     }
-    snprintf(out, out_len, "Class %s %s", mqtt_class_name_locked(), suffix);
+    snprintf(out, out_len, "%s/%s", mqtt_class_name_locked(), suffix);
 }
 
 static bool mqtt_publish_raw(const char* topic, const char* payload, bool retained, const char* label) {
