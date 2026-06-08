@@ -176,8 +176,9 @@ When `human_presence_valid == true` and `g_state.sensor.human_presence == false`
 - All server-side MQTT control commands (ON, OFF, parameter changes) are accepted and executed.
 
 When `human_presence_valid == false`:
-- Safety logic should fail conservative for destructive commands such as turning
-  AC/lights OFF remotely.
+- Safety logic should fail conservative for LED/light OFF commands.
+- AC OFF commands may still be accepted when presence is unknown so rooms
+  without a presence sensor can still be controlled remotely.
 - The master should report Alert Bit 3 so the server/Flutter can show that
   occupancy state is unknown.
 

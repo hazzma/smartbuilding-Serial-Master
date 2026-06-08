@@ -584,7 +584,7 @@ static void mqtt_callback(char* topic, byte* payload, unsigned int length) {
         uint8_t desired_swing = 0;
         if (mqtt_parse_ac_payload(payload, length, desired_power, desired_target, desired_fan, desired_swing)) {
             data_lock(g_state);
-            if ((occupied || !presence_known) && !desired_power) {
+            if (occupied && !desired_power) {
                 desired_power = g_state.sensor.ac_on;
                 Serial.println("[MQTT] AC OFF command ignored by occupancy safety");
             }
@@ -617,7 +617,7 @@ static void mqtt_callback(char* topic, byte* payload, unsigned int length) {
             } else {
                 new_power = doc["power"].as<bool>();
             }
-            if ((occupied || !presence_known) && !new_power) {
+            if (occupied && !new_power) {
                 Serial.println("[MQTT] AC OFF JSON command ignored by occupancy safety");
             } else {
                 g_state.sensor.ac_on = new_power;
@@ -745,7 +745,7 @@ static void mqtt_callback(char* topic, byte* payload, unsigned int length) {
             }
             if (!controls["ac"]["power"].isNull()) {
                 bool new_ac_power = controls["ac"]["power"].as<bool>();
-                if ((occupied || !presence_known) && !new_ac_power) {
+                if (occupied && !new_ac_power) {
                     Serial.println("[MQTT] Master AC power OFF command ignored by occupancy safety");
                 } else {
                     g_state.sensor.ac_on = new_ac_power;

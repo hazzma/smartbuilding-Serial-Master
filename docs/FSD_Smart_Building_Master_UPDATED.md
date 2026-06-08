@@ -78,8 +78,10 @@ What changed:
 - The existing `PRE_CLASS_ON` and `CLASS_ENDED` schedule commands SHALL remain
   supported as fallback/manual event commands.
 - Occupancy safety rules SHALL only trust `human_presence` when the presence
-  value is valid. If presence is invalid, remote destructive commands SHOULD
-  fail conservative and Alert Bit 3 SHOULD remain raised.
+  value is valid. AC OFF commands SHALL only be blocked when presence is valid
+  and occupied. If presence is invalid, Alert Bit 3 SHOULD remain raised, but AC
+  OFF MAY still be accepted so rooms without a presence sensor remain remotely
+  controllable.
 - Active-load anomaly logic SHOULD require valid local time, valid empty-room
   occupancy, enough historical days, and a meaningful baseline before raising
   Alert Bit 7.
