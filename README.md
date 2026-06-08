@@ -38,6 +38,11 @@ Implementation effect:
 
 ## Patch Notes
 
+### V2.6.1
+
+- Updates MQTT topic structure and payload formatting.
+- Updates alert handling and alert topic behavior.
+
 ### V2.6
 
 - Updates MQTT formatting for clearer per-topic payloads and improved broker command handling.
