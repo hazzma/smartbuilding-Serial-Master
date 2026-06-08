@@ -4,16 +4,51 @@ This document details the system design, logical changes, and documentation impa
 
 ---
 
+## V2.7.1 Checkpoint
+
+V2.7.1 is a documentation checkpoint for tightening the V2.7 automation logic
+before the next implementation pass. It keeps the V2.7 feature direction, but
+fixes the parts that were too fixed-threshold or too easy to misinterpret:
+
+- Projector verification should use an adaptive Lux baseline instead of only a
+  fixed `50 lx` delta.
+- Occupancy safety rules should only trust presence when the presence sensor
+  value is valid.
+- Smart shutdown should recheck slowly when a room remains occupied, rather
+  than effectively keeping an expired timer hot.
+- Alert Bit 7 is finalized as after-hours empty-room active-load anomaly.
+
+---
+
 ## 1. Projector State Verification using Lux Sensor (BH1750)
 
 ### Background
 Currently, the Projector IR control operates as a one-way (simplex) transmission. The Master cannot verify if the projector actually powered ON or if it failed (e.g., due to bulb burnout or blocked IR transceiver). By utilizing the ambient Lux sensor (BH1750) on the slave device, the Master can verify the projector's power state through a light-level feedback loop.
 
 ### Logic & State Machine
-1. **State Addition**: A new state `PROJ_STATE_POWERING_ON` is introduced alongside `PROJ_STATE_OFF` and `PROJ_STATE_ON`.
+1. **State Addition**: Projector verification should expose enough state for UI
+   and MQTT/server phrasing:
+   - `PROJ_STATE_OFF`
+   - `PROJ_STATE_POWERING_ON`
+   - `PROJ_STATE_VERIFYING`
+   - `PROJ_STATE_VERIFIED_ON`
+   - `PROJ_STATE_VERIFY_SKIPPED_NO_LUX`
+   - `PROJ_STATE_FAILED`
+2. **Ambient Baseline Learning**:
+   - While the projector is OFF and Lux is valid, the master should learn the
+     room ambient baseline slowly.
+   - The baseline should update only when the room is stable enough for a useful
+     reference, not while a projector verification is active.
+   - Minimal tracked values:
+     - `proj_lux_baseline_avg`
+     - optional `proj_lux_noise_avg` or last-stable-delta estimate
+     - `proj_lux_baseline_valid`
+   - The baseline is a room condition, not a projector state. It may persist in
+     RAM first; NVS persistence can be added only if later testing shows boot
+     recalibration is too slow.
 2. **Initial Trigger**:
    - When the user (via local HMI or MQTT control) triggers Projector ON:
-     1. Record the current ambient light level as $L_{initial}$ (in Lux).
+     1. Freeze the latest valid ambient baseline as `L_baseline`.
      2. Transition the internal state to `PROJ_STATE_POWERING_ON`.
      3. Send the IR ON Modbus command to the slave.
      4. Immediately publish `1` (ON) to MQTT topic `HD01/data/projector` to maintain responsive UI status.
@@ -21,19 +56,34 @@ Currently, the Projector IR control operates as a one-way (simplex) transmission
 3. **Verification**:
    - After the 8-second `warmup_timer` expires:
      1. Read the latest Lux value as $L_{current}$.
-     2. Calculate the difference: $\Delta L = L_{current} - L_{initial}$.
-     3. If $\Delta L \ge L_{threshold}$ (default: $50\text{ lx}$):
-        - Transition to `PROJ_STATE_ON`.
-     4. If $\Delta L < L_{threshold}$:
+     2. Calculate the difference: `delta_lux = L_current - L_baseline`.
+     3. Calculate an adaptive threshold:
+        `threshold_lux = max(20 lx, min(80 lx, L_baseline * 0.20))`.
+     4. Optionally calculate a ratio guard:
+        `ratio = L_current / max(L_baseline, 1 lx)`.
+     5. Verification passes if either:
+        - `delta_lux >= threshold_lux`
+        - `ratio >= 1.25` and `delta_lux >= 15 lx`
+     6. If verification passes:
+        - Transition to `PROJ_STATE_VERIFIED_ON`.
+        - Clear Projector Alert Bit 5.
+     7. If verification fails:
         - If `retry_count == 0`:
           - Increment `retry_count` to `1`.
           - Re-send the IR ON command to the slave.
           - Restart the 8-second timer.
         - If `retry_count == 1`:
-          - Transition to `PROJ_STATE_OFF`.
+          - Transition to `PROJ_STATE_FAILED`, then return display/control state
+            to OFF.
           - Set the **Projector Alert Flag** (Bit 5 in alert bitmask) to report a hardware failure.
           - Publish `0` (OFF) to MQTT topic `HD01/data/projector` (reverting the initial optimistic state).
           - Reset `retry_count` to `0`.
+4. **No Valid Lux Fallback**:
+   - If Lux is invalid (`< 0.0 lx`) or no baseline is available, the master may
+     keep the optimistic projector ON state so the command remains responsive.
+   - The verification state must be `PROJ_STATE_VERIFY_SKIPPED_NO_LUX`, not
+     `PROJ_STATE_VERIFIED_ON`.
+   - Projector Alert Bit 5 should not be raised from verification skip alone.
 
 ---
 
@@ -50,11 +100,15 @@ Currently, the Projector IR control operates as a one-way (simplex) transmission
    - Action: Master starts a local 20-minute countdown timer (`shutdown_timer`).
 3. **Shutdown Verification**:
    - When the 20-minute `shutdown_timer` expires, the Master checks the human presence state:
-     - **If `human_presence == false`** (Class is empty):
+     - **If `human_presence_valid == true` and `human_presence == false`** (Class is confirmed empty):
        - Master sends commands to turn OFF the AC and Lights.
-     - **If `human_presence == true`** (Students or teacher still present):
+     - **If `human_presence_valid == true` and `human_presence == true`** (Students or teacher still present):
        - Master delays shutdown and schedules a recheck every 5 minutes.
        - Once human presence becomes `false` during a recheck, the Master turns OFF the AC and Lights.
+     - **If `human_presence_valid == false`**:
+       - Master must not assume the room is empty.
+       - Master should delay shutdown and raise/keep the presence sensor alert
+         through Alert Bit 3.
 
 ---
 
@@ -64,7 +118,8 @@ Currently, the Projector IR control operates as a one-way (simplex) transmission
 To prevent remote scheduling scripts or server-side operators from disrupting active classes (e.g., turning off lights or AC while students are studying or taking exams), the Master enforces a local occupancy safety check.
 
 ### Override Rules
-When `g_state.sensor.human_presence == true` (Classroom is occupied):
+When `human_presence_valid == true` and `g_state.sensor.human_presence == true`
+(Classroom is confirmed occupied):
 1. **MQTT LED Commands Restricted**:
    - Ignore any incoming commands on `HD01/control/led` that attempt to toggle LED power (both ON and OFF commands from the server are discarded).
 2. **MQTT AC Commands Restricted**:
@@ -73,19 +128,32 @@ When `g_state.sensor.human_presence == true` (Classroom is occupied):
 3. **Local HMI Control Priority**:
    - Local touchscreen controls on the Master HMI remain fully enabled. Physical users inside the classroom can override the safety block at any time.
 
-When `g_state.sensor.human_presence == false` (Classroom is empty):
+When `human_presence_valid == true` and `g_state.sensor.human_presence == false`
+(Classroom is confirmed empty):
 - All server-side MQTT control commands (ON, OFF, parameter changes) are accepted and executed.
+
+When `human_presence_valid == false`:
+- Safety logic should fail conservative for destructive commands such as turning
+  AC/lights OFF remotely.
+- The master should report Alert Bit 3 so the server/Flutter can show that
+  occupancy state is unknown.
 
 ---
 
-## 4. 7-Day Rolling Average Lamp Anomaly Alerting
+## 4. 7-Day Rolling Average Active-Load Anomaly Alerting
 
 ### Background
-Detects electrical anomalies (e.g., lights left ON overnight or left ON in an empty room) by monitoring daily active durations, without exhausting ESP32 flash memory or requiring cloud calculations.
+Detects electrical anomalies (e.g., lights or AC left ON overnight in an empty
+room) by monitoring daily active-load durations, without exhausting ESP32 flash
+memory or requiring cloud calculations.
 
 ### Technical Implementation
 1. **Daily Tracking**:
-   - The Master tracks the cumulative "ON duration" (in minutes) of the light relays for the current day in RAM (`current_day_duration`).
+   - The Master tracks the cumulative active-load duration in RAM.
+   - Recommended V2.7.1 definition:
+     `active_load = light_on || ac_on`.
+   - `active_load_minutes` is more useful than lamp-only minutes because the
+     energy anomaly is "empty class still consuming power".
 2. **Midnight Rolling Log**:
    - The Master synchronizes its clock via NTP.
    - At exactly 00:00 (midnight) or on boot if a date boundary is crossed:
@@ -95,9 +163,18 @@ Detects electrical anomalies (e.g., lights left ON overnight or left ON in an em
      3. Reset `current_day_duration` to `0`.
      4. Persist `light_history` (7 elements of `uint16_t`) and `day_count` (uint32_t) to ESP32 Preferences under the namespace `"light_anom"`. This ensures day 1 is replaced by day 8, maintaining a sliding 7-day window.
 3. **Anomaly Logic**:
-   - Preequisite: `day_count >= 7` (requires at least 1 week of historical baseline).
-   - If `current_day_duration > (average(light_history) * 1.5)` (exceeds 1.5x of the weekly average) AND the current time is after hours (e.g., 22:00 to 06:00) AND `human_presence == false`:
-     - Raise **Light Anomaly Alert** by setting **Bit 7** (value `128`) on the `HD01/data/alert` bitmask.
+   - Prerequisites:
+     - Local time is valid.
+     - At least 5 valid historical days exist; 7 days is preferred.
+     - Historical average is meaningful, recommended `avg_7d >= 30 minutes`.
+     - Presence is valid and the room is confirmed empty.
+   - Recommended threshold:
+     `active_load_minutes > max(avg_7d * 1.5, avg_7d + 60)`.
+   - The alert is evaluated only during after-hours, recommended `22:00-06:00`.
+   - If all conditions pass:
+     - Raise **After-Hours Empty-Room Active-Load Anomaly** by setting **Bit 7**
+       (value `128`) on the `HD01/data/alert` bitmask.
+   - If presence is invalid, do not raise Bit 7. Raise/keep Alert Bit 3 instead.
 
 ---
 
@@ -128,4 +205,4 @@ The following files require updates to integrate these new features:
 * **Section Runtime Topic Format**:
   - Register `HD01/control/schedule` commands: `"PRE_CLASS_ON"`, `"CLASS_ENDED"`.
 * **Section Payload Format (Alert Decimal Bitmask Table)**:
-  - Add Bit 7 (Value `128`) for "Light Anomaly Alert".
+  - Add Bit 7 (Value `128`) for "After-Hours Empty-Room Active-Load Anomaly".

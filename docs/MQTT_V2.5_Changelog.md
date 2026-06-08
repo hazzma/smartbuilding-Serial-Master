@@ -78,7 +78,7 @@ should send numeric payloads.
 | 4 | 16 | LED/relay error. |
 | 5 | 32 | Projector error. |
 | 6 | 64 | AC error. |
-| 7 | 128 | Light Anomaly Alert (Daily active light duration > 1.5x weekly average during after-hours 22:00-06:00 when unoccupied). |
+| 7 | 128 | After-hours empty-room active-load anomaly. Recommended V2.7.1 trigger: valid time, valid empty occupancy, enough baseline days, and `active_load_minutes > max(avg_7d * 1.5, avg_7d + 60)` during 22:00-06:00. |
 
 Example:
 
@@ -86,8 +86,8 @@ Example:
 131
 ```
 
-Means `1 + 2 + 128`: temperature error, CO2 error, and presence outside
-schedule.
+Means `1 + 2 + 128`: temperature error, CO2 error, and after-hours
+empty-room active-load anomaly.
 
 ### AC 8-Digit Payload Draft
 

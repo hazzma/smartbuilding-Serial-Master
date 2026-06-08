@@ -38,6 +38,12 @@ Implementation effect:
 
 ## Patch Notes
 
+### V2.7.1
+
+- **Projector Adaptive Verification Target**: Refines the V2.7 projector check from a fixed Lux delta into an adaptive baseline algorithm. While the projector is OFF and Lux is valid, the master learns the room ambient baseline. When Projector ON is requested, it compares the post-warmup Lux against that baseline using a hybrid threshold such as `max(20 lx, min(80 lx, baseline * 0.20))` plus a ratio guard. If Lux is invalid, the master may keep the optimistic ON state but must mark verification as skipped, not verified.
+- **Scheduler Safety Clarification**: Occupancy-based shutdown should only trust `human_presence` when the presence value is valid. If the shutdown timer expires while the room is still occupied, the master should recheck on a slow interval such as 5 minutes instead of continuously evaluating the expired timer.
+- **Anomaly Alert Baseline Fix**: Alert Bit 7 (128) is defined as after-hours empty-room active-load anomaly. The alert should require valid time, valid occupancy, enough historical days, and a meaningful baseline. Recommended trigger: `active_load_minutes > max(avg_7d * 1.5, avg_7d + 60)` during 22:00-06:00 when the room is confirmed empty.
+
 ### V2.7
 
 - **Projector Verification**: Implemented projector verification using BH1750 ambient light delta ($\Delta L \ge 50\text{ lx}$) over 8 seconds. Optimistically publishes `"1"` (ON) to MQTT when powering, retries once on failure, then falls back to OFF and publishes `"0"` with Alert Bit 5 (32) raised. If no valid Lux sensor is available ($<0.0\text{ lx}$), it skips the check and transitions directly to ON.

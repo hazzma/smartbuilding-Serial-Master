@@ -620,6 +620,26 @@ The projector SHALL NOT be rendered as a thin horizontal button in this combinat
 
 Projector control SHALL use a large touch target and SHALL visually match the scale of other active dashboard controls.
 
+V2.7.1 projector verification state display:
+
+```text
+OFF
+POWERING_ON
+VERIFYING
+VERIFIED_ON
+VERIFY_SKIPPED_NO_LUX
+FAILED
+```
+
+UI behavior:
+- `POWERING_ON` / `VERIFYING` SHOULD show a pending visual state while keeping
+  the command responsive.
+- `VERIFIED_ON` SHOULD render as normal ON.
+- `VERIFY_SKIPPED_NO_LUX` SHOULD render as ON with a subtle warning/status cue,
+  because the command was sent but Lux feedback was unavailable.
+- `FAILED` SHOULD render as OFF or failed command state and should expose the
+  projector alert from Alert Bit 5.
+
 If LED also exists:
 
 ```text

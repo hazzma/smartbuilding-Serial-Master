@@ -189,7 +189,7 @@ Bit assignments:
 | 4 | 16 | LED/relay error. |
 | 5 | 32 | Projector error. |
 | 6 | 64 | AC error. |
-| 7 | 128 | Presence detected outside schedule. Reserved until schedule logic is implemented. |
+| 7 | 128 | After-hours empty-room active-load anomaly. Server/Flutter should phrase this as an empty-room energy anomaly, not as a sensor fault. |
 
 Example:
 
@@ -197,7 +197,7 @@ Example:
 131
 ```
 
-Meaning: temperature error + CO2 error + presence outside schedule.
+Meaning: temperature error + CO2 error + after-hours empty-room active-load anomaly.
 
 ---
 

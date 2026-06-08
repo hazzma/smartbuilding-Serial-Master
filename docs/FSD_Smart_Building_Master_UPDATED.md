@@ -52,10 +52,21 @@ What changed:
   `16..30` degrees Celsius.
 - Simple/general sensor payloads SHALL use integer payloads unless their specific spec says otherwise.
 - Alert payload SHALL use a decimal integer bitmask on `HD01/data/alert`.
+- V2.7.1 SHALL define Alert Bit 7 (`128`) as after-hours empty-room active-load
+  anomaly. It SHALL NOT mean generic presence outside schedule.
 - Active payload SHALL use retained `1` on `HD01/data/active`; MQTT LWT SHALL publish retained `0` on unexpected disconnect.
 - Server-side consumers MAY subscribe to MQTT, phrase/normalize the numeric
   payloads, and provide that processed data to Flutter. Master payloads SHALL
   stay numeric and lightweight.
+- Projector verification SHOULD use an adaptive Lux baseline learned while the
+  projector is OFF. Fixed `50 lx` delta checks are allowed only as fallback or
+  legacy behavior.
+- Occupancy safety rules SHALL only trust `human_presence` when the presence
+  value is valid. If presence is invalid, remote destructive commands SHOULD
+  fail conservative and Alert Bit 3 SHOULD remain raised.
+- Active-load anomaly logic SHOULD require valid local time, valid empty-room
+  occupancy, enough historical days, and a meaningful baseline before raising
+  Alert Bit 7.
 - After an actuator command is confirmed by the target slave, the master SHALL publish the latest state again so Flutter/dashboard clients stay synchronized.
 - Slave configuration SHALL follow the v2.1 Device Profile model. Master enforces profile policy; slave remains policy-blind.
 
