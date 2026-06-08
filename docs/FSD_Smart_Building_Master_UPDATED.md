@@ -70,6 +70,13 @@ What changed:
 - If no Lux channel verifies projector ON after one retry, projector state SHALL
   remain ON, UI/status SHOULD show `CHECK_PROJECTOR`, and Alert Bit 5 SHOULD be
   raised for inspection.
+- Schedule input SHALL be server-owned and UI-less on the master. The master
+  SHALL always listen to `HD01/control/schedule`.
+- `HD01/control/schedule` SHALL support a daily overwrite payload such as
+  `YYYYMMDD;0800-0930;1015-1200`. A valid payload SHALL replace the previous
+  stored daily schedule and reset slot trigger flags.
+- The existing `PRE_CLASS_ON` and `CLASS_ENDED` schedule commands SHALL remain
+  supported as fallback/manual event commands.
 - Occupancy safety rules SHALL only trust `human_presence` when the presence
   value is valid. If presence is invalid, remote destructive commands SHOULD
   fail conservative and Alert Bit 3 SHOULD remain raised.
@@ -1256,7 +1263,7 @@ runtime template `<class_name>/control/<command_type>`.
 | `HD01/control/led` | Integer command | Forward LED command to target slave, wait for confirmation, publish LED integer state. |
 | `HD01/control/ac` | `PPTTFFSS` command | Forward AC command to target slave, wait for confirmation, publish latest AC state. |
 | `HD01/control/projector` | Integer command | Forward projector command to target slave, wait for confirmation, publish latest projector integer state. |
-| `HD01/control/schedule` | Reserved integer/structured command | Future schedule configuration/control input. |
+| `HD01/control/schedule` | Event or daily schedule command | Accepts `PRE_CLASS_ON`, `CLASS_ENDED`, or daily overwrite payload `YYYYMMDD;HHMM-HHMM;...`. |
 
 What changed: command handling is topic-based and confirmation-based.
 

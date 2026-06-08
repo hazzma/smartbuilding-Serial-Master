@@ -97,15 +97,51 @@ Currently, the Projector IR control operates as a one-way (simplex) transmission
 ## 2. Scheduler & Occupancy-Based Shutdown (Smart Shutdown)
 
 ### Logic & Event Flow
-1. **Pre-Class Event (Server to Master)**:
+The master does not need a local UI for schedule editing. It always listens to
+`HD01/control/schedule` and accepts schedule input from the server.
+
+1. **Daily Schedule Payload (Preferred Server Flow)**:
+   - Topic: `HD01/control/schedule`
+   - Payload format:
+     ```text
+     YYYYMMDD;HHMM-HHMM;HHMM-HHMM;...
+     ```
+   - Example:
+     ```text
+     20260609;0800-0930;1015-1200;1330-1500
+     ```
+   - The first field is the local date.
+   - Each following field is one class session, with start and end time in local
+     master time.
+   - A valid daily payload SHALL replace/overwrite the previous stored schedule
+     and reset all per-slot trigger flags.
+   - This overwrite behavior is intentional: the server may send the full daily
+     schedule once around midnight, and the master can continue running the day's
+     tasks locally if MQTT/server availability becomes unstable later.
+   - A date-only payload such as `20260609` means the room has no class sessions
+     that day and should clear previous slots for that date.
+   - Recommended limits:
+     - Max `8` sessions per day.
+     - Reject invalid times, `start >= end`, malformed fields, or too many slots.
+2. **Local Schedule Execution**:
+   - The master checks local RTC/time periodically.
+   - For each stored slot:
+     - At `start - 20 minutes`, run the same action as `PRE_CLASS_ON`.
+     - At `end`, run the same action as `CLASS_ENDED`.
+   - Each slot must have trigger flags such as `pre_triggered` and
+     `end_triggered` so the same event is not emitted repeatedly.
+   - If the master reboots during an active class and local time is valid, it may
+     perform a one-time catch-up by ensuring AC/lights are ON when
+     `start <= now < end`.
+3. **Pre-Class Event Fallback (Server to Master)**:
    - Topic: `HD01/control/schedule`
    - Payload: `"PRE_CLASS_ON"` (sent 20 minutes before a scheduled class).
    - Action: Master immediately sends command to turn ON the AC and Lights.
-2. **Class Ended Event (Server to Master)**:
+4. **Class Ended Event Fallback (Server to Master)**:
    - Topic: `HD01/control/schedule`
    - Payload: `"CLASS_ENDED"` (sent at the exact end of class).
    - Action: Master starts a local 20-minute countdown timer (`shutdown_timer`).
-3. **Shutdown Verification**:
+5. **Shutdown Verification**:
    - When the 20-minute `shutdown_timer` expires, the Master checks the human presence state:
      - **If `human_presence_valid == true` and `human_presence == false`** (Class is confirmed empty):
        - Master sends commands to turn OFF the AC and Lights.

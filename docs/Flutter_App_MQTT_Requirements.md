@@ -229,6 +229,21 @@ Direction rule:
 - Master publishes state to `HD01/data/...`.
 - Master listens to commands on `HD01/control/...`.
 
+Schedule command payloads:
+
+```text
+PRE_CLASS_ON
+CLASS_ENDED
+YYYYMMDD;HHMM-HHMM;HHMM-HHMM;...
+```
+
+The server owns schedule generation. The master has no schedule-edit UI; it
+only listens to `HD01/control/schedule`. A valid daily payload replaces the
+previous stored daily schedule and resets trigger flags. Recommended server
+behavior is to publish the full daily schedule around midnight so the master can
+execute pre-class and class-ended actions locally even if server availability is
+unstable later in the day.
+
 Command flow:
 1. Flutter app or server publishes actuator command to the selected class/room `control` topic.
 2. Master receives the MQTT command.

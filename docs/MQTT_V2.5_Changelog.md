@@ -65,6 +65,19 @@ The firmware accepts scalar command payloads on `HD01/control/led` and
 `HD01/control/projector`: `1`, `0`, `on`, `off`, `true`, or `false`. New clients
 should send numeric payloads.
 
+`HD01/control/schedule` accepts both event commands and daily schedule payloads:
+
+```text
+PRE_CLASS_ON
+CLASS_ENDED
+YYYYMMDD;HHMM-HHMM;HHMM-HHMM;...
+```
+
+A valid daily schedule payload overwrites the previous stored schedule and
+resets slot trigger flags. Example: `20260609;0800-0930;1015-1200`. This lets
+the server push one daily schedule around midnight while the master executes the
+day locally if server/MQTT availability becomes unstable later.
+
 ### Alert Decimal Bitmask
 
 `HD01/data/alert` publishes one decimal integer. Each bit means:
