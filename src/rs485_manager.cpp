@@ -1738,12 +1738,12 @@ void rs485_request_projector_command(bool power, uint8_t input) {
 
     if (power) {
         g_state.sensor.projector_on = true;
-        if (g_state.sensor.lux < 0.0f) {
-            g_state.sensor.proj_verif_state = 2; // ON
+        if (g_state.sensor.lux < 0.0f || !g_state.sensor.proj_lux_baseline_valid) {
+            g_state.sensor.proj_verif_state = 4; // VERIFY_SKIPPED_NO_LUX
             g_state.sensor.proj_hardware_failed = false;
         } else {
             g_state.sensor.proj_verif_state = 1; // POWERING_ON
-            g_state.sensor.proj_lux_initial = g_state.sensor.lux;
+            g_state.sensor.proj_lux_initial = g_state.sensor.proj_lux_baseline_avg;
             g_state.sensor.proj_warmup_timer_ms = millis() + 8000;
             g_state.sensor.proj_retry_count = 0;
             g_state.sensor.proj_hardware_failed = false;
@@ -1759,6 +1759,23 @@ void rs485_request_projector_command(bool power, uint8_t input) {
     g_state.rs485.status[sizeof(g_state.rs485.status) - 1] = '\0';
     g_state.ui_needs_update = true;
     data_unlock(g_state);
+}
+
+static bool rs485_projector_lux_verified(float baseline_lux, float current_lux, float* delta_out, float* threshold_out, float* ratio_out) {
+    float safe_baseline = baseline_lux;
+    if (safe_baseline < 1.0f) safe_baseline = 1.0f;
+
+    float delta_lux = current_lux - baseline_lux;
+    float threshold_lux = baseline_lux * 0.20f;
+    if (threshold_lux < 20.0f) threshold_lux = 20.0f;
+    if (threshold_lux > 80.0f) threshold_lux = 80.0f;
+    float ratio = current_lux / safe_baseline;
+
+    if (delta_out) *delta_out = delta_lux;
+    if (threshold_out) *threshold_out = threshold_lux;
+    if (ratio_out) *ratio_out = ratio;
+
+    return (delta_lux >= threshold_lux) || (ratio >= 1.25f && delta_lux >= 15.0f);
 }
 
 static void rs485_request_pairing_debug(uint32_t timeout_ms) {
@@ -2410,9 +2427,21 @@ static void rs485_handle_control_commands() {
 
 static void rs485_handle_projector_verification() {
     data_lock(g_state);
+    if (!g_state.sensor.projector_on &&
+        g_state.sensor.lux >= 0.0f &&
+        (g_state.sensor.proj_verif_state == 0 || g_state.sensor.proj_verif_state == 5)) {
+        if (!g_state.sensor.proj_lux_baseline_valid) {
+            g_state.sensor.proj_lux_baseline_avg = g_state.sensor.lux;
+            g_state.sensor.proj_lux_baseline_valid = true;
+        } else {
+            g_state.sensor.proj_lux_baseline_avg =
+                (g_state.sensor.proj_lux_baseline_avg * 0.90f) + (g_state.sensor.lux * 0.10f);
+        }
+    }
+
     if (g_state.sensor.proj_verif_state == 1 || g_state.sensor.proj_verif_state == 3) {
-        if (g_state.sensor.lux < 0.0f) {
-            g_state.sensor.proj_verif_state = 2; // ON
+        if (g_state.sensor.lux < 0.0f || !g_state.sensor.proj_lux_baseline_valid) {
+            g_state.sensor.proj_verif_state = 4; // VERIFY_SKIPPED_NO_LUX
             g_state.sensor.proj_hardware_failed = false;
             g_state.ui_needs_update = true;
             data_unlock(g_state);
@@ -2420,29 +2449,36 @@ static void rs485_handle_projector_verification() {
         }
 
         float current_lux = g_state.sensor.lux;
-        float delta_lux = current_lux - g_state.sensor.proj_lux_initial;
+        float delta_lux = 0.0f;
+        float threshold_lux = 0.0f;
+        float ratio = 0.0f;
+        bool verified = rs485_projector_lux_verified(g_state.sensor.proj_lux_initial,
+                                                     current_lux,
+                                                     &delta_lux,
+                                                     &threshold_lux,
+                                                     &ratio);
 
-        if (delta_lux >= 50.0f) {
-            g_state.sensor.proj_verif_state = 2; // ON
+        if (verified) {
+            g_state.sensor.proj_verif_state = 2; // VERIFIED_ON
             g_state.sensor.proj_hardware_failed = false;
             g_state.ui_needs_update = true;
-            Serial.printf("[Projector] Verified ON early. Lux delta: %.1f\n", delta_lux);
+            Serial.printf("[Projector] Verified ON early. base=%.1f current=%.1f delta=%.1f threshold=%.1f ratio=%.2f\n",
+                          g_state.sensor.proj_lux_initial, current_lux, delta_lux, threshold_lux, ratio);
             data_unlock(g_state);
             return;
         }
 
         if (millis() >= g_state.sensor.proj_warmup_timer_ms) {
-            Serial.printf("[Projector] Timer expired. Lux initial: %.1f, current: %.1f, delta: %.1f\n", 
-                          g_state.sensor.proj_lux_initial, current_lux, delta_lux);
+            Serial.printf("[Projector] Timer expired. base=%.1f current=%.1f delta=%.1f threshold=%.1f ratio=%.2f\n",
+                          g_state.sensor.proj_lux_initial, current_lux, delta_lux, threshold_lux, ratio);
             
-            if (delta_lux >= 50.0f) {
-                g_state.sensor.proj_verif_state = 2; // ON
+            if (verified) {
+                g_state.sensor.proj_verif_state = 2; // VERIFIED_ON
                 g_state.sensor.proj_hardware_failed = false;
                 g_state.ui_needs_update = true;
             } else {
                 if (g_state.sensor.proj_verif_state == 1) {
                     g_state.sensor.proj_verif_state = 3; // RETRYING
-                    g_state.sensor.proj_lux_initial = current_lux;
                     g_state.sensor.proj_warmup_timer_ms = millis() + 8000;
                     g_state.sensor.proj_retry_count = 1;
                     g_state.ui_needs_update = true;
@@ -2453,7 +2489,7 @@ static void rs485_handle_projector_verification() {
                     
                     Serial.println("[Projector] First verification failed. Retrying...");
                 } else {
-                    g_state.sensor.proj_verif_state = 0; // OFF
+                    g_state.sensor.proj_verif_state = 5; // FAILED
                     g_state.sensor.proj_hardware_failed = true;
                     g_state.sensor.projector_on = false;
                     g_state.ui_needs_update = true;

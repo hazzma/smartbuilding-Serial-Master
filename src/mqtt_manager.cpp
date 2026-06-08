@@ -501,24 +501,25 @@ static void mqtt_callback(char* topic, byte* payload, unsigned int length) {
     char topic_ac[48];
     char topic_projector[48];
     char topic_schedule[48];
-    bool presence = false;
+    bool presence_known = false;
+    bool occupied = false;
 
     data_lock(g_state);
     mqtt_build_control_topic_locked(MQTT_TOPIC_LED, topic_led, sizeof(topic_led));
     mqtt_build_control_topic_locked(MQTT_TOPIC_AC, topic_ac, sizeof(topic_ac));
     mqtt_build_control_topic_locked(MQTT_TOPIC_PROJECTOR, topic_projector, sizeof(topic_projector));
     mqtt_build_control_topic_locked(MQTT_TOPIC_SCHEDULE, topic_schedule, sizeof(topic_schedule));
-    presence = g_state.sensor.human_presence;
+    presence_known = g_state.rs485.dashboard.human_presence_valid;
+    occupied = presence_known && g_state.sensor.human_presence;
     data_unlock(g_state);
 
     if (strcmp(topic, topic_led) == 0) {
-        if (presence) {
-            Serial.println("[MQTT] LED command ignored due to active human presence");
-            return;
-        }
-
         bool scalar_on = false;
         if (mqtt_parse_bool_payload(payload, length, scalar_on)) {
+            if (occupied || (!presence_known && !scalar_on)) {
+                Serial.println("[MQTT] LED command ignored by occupancy safety");
+                return;
+            }
             data_lock(g_state);
             g_state.sensor.light_on = scalar_on;
             g_state.ui_needs_update = true;
@@ -546,22 +547,27 @@ static void mqtt_callback(char* topic, byte* payload, unsigned int length) {
             for (JsonObject pos : doc["positions"].as<JsonArray>()) {
                 const char* state_text = pos["state"] | "";
                 if (strcmp(state_text, "ON") == 0 || strcmp(state_text, "OFF") == 0) {
-                    g_state.sensor.light_on = strcmp(state_text, "ON") == 0;
-                    desired_on = g_state.sensor.light_on;
+                    desired_on = strcmp(state_text, "ON") == 0;
                     changed = true;
                 }
             }
         } else if (!doc["power"].isNull()) {
             if (doc["power"].is<const char*>()) {
                 const char* power = doc["power"] | "";
-                g_state.sensor.light_on = strcmp(power, "ON") == 0 || strcmp(power, "on") == 0;
+                desired_on = strcmp(power, "ON") == 0 || strcmp(power, "on") == 0;
             } else {
-                g_state.sensor.light_on = doc["power"].as<bool>();
+                desired_on = doc["power"].as<bool>();
             }
-            desired_on = g_state.sensor.light_on;
             changed = true;
         }
-        if (changed) g_state.ui_needs_update = true;
+        if (changed && (occupied || (!presence_known && !desired_on))) {
+            changed = false;
+            Serial.println("[MQTT] LED JSON command ignored by occupancy safety");
+        }
+        if (changed) {
+            g_state.sensor.light_on = desired_on;
+            g_state.ui_needs_update = true;
+        }
         data_unlock(g_state);
         if (changed) {
             rs485_request_light_command(desired_on);
@@ -578,9 +584,9 @@ static void mqtt_callback(char* topic, byte* payload, unsigned int length) {
         uint8_t desired_swing = 0;
         if (mqtt_parse_ac_payload(payload, length, desired_power, desired_target, desired_fan, desired_swing)) {
             data_lock(g_state);
-            if (presence && !desired_power) {
-                desired_power = true;
-                Serial.println("[MQTT] AC OFF command ignored due to active human presence");
+            if ((occupied || !presence_known) && !desired_power) {
+                desired_power = g_state.sensor.ac_on;
+                Serial.println("[MQTT] AC OFF command ignored by occupancy safety");
             }
             g_state.sensor.ac_on = desired_power;
             g_state.sensor.temp_target = desired_target;
@@ -611,8 +617,8 @@ static void mqtt_callback(char* topic, byte* payload, unsigned int length) {
             } else {
                 new_power = doc["power"].as<bool>();
             }
-            if (presence && !new_power) {
-                Serial.println("[MQTT] AC OFF JSON command ignored due to active human presence");
+            if ((occupied || !presence_known) && !new_power) {
+                Serial.println("[MQTT] AC OFF JSON command ignored by occupancy safety");
             } else {
                 g_state.sensor.ac_on = new_power;
             }
@@ -739,8 +745,8 @@ static void mqtt_callback(char* topic, byte* payload, unsigned int length) {
             }
             if (!controls["ac"]["power"].isNull()) {
                 bool new_ac_power = controls["ac"]["power"].as<bool>();
-                if (presence && !new_ac_power) {
-                    Serial.println("[MQTT] Master AC power OFF command ignored due to active human presence");
+                if ((occupied || !presence_known) && !new_ac_power) {
+                    Serial.println("[MQTT] Master AC power OFF command ignored by occupancy safety");
                 } else {
                     g_state.sensor.ac_on = new_ac_power;
                     ac_changed = true;
@@ -765,10 +771,11 @@ static void mqtt_callback(char* topic, byte* payload, unsigned int length) {
             if (controls["lights"].is<JsonArray>()) {
                 for (JsonObject light : controls["lights"].as<JsonArray>()) {
                     if (!light["power"].isNull()) {
-                        if (presence) {
-                            Serial.println("[MQTT] Master light power command ignored due to active human presence");
+                        bool new_light_power = light["power"].as<bool>();
+                        if (occupied || (!presence_known && !new_light_power)) {
+                            Serial.println("[MQTT] Master light power command ignored by occupancy safety");
                         } else {
-                            g_state.sensor.light_on = light["power"].as<bool>();
+                            g_state.sensor.light_on = new_light_power;
                             light_changed = true;
                             light_power = g_state.sensor.light_on;
                         }

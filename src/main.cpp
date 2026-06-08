@@ -195,7 +195,7 @@ void Task_Net(void* pvParameters) {
         mqtt_loop();
         time_manager_update();
 
-        // 1-second logic check for Light Active Time accumulation, Midnight Rollover, and Scheduler countdowns
+        // 1-second logic check for active-load accumulation, midnight rollover, and scheduler countdowns
         static uint32_t last_sec_check = 0;
         if (now - last_sec_check >= 1000) {
             last_sec_check = now;
@@ -209,14 +209,20 @@ void Task_Net(void* pvParameters) {
 
             data_lock(g_state);
 
-            // Accumulate light active duration
+            // Accumulate daily active durations.
             if (g_state.sensor.light_on) {
                 g_state.sensor.light_accum_sec_today++;
+            }
+            if (g_state.sensor.light_on || g_state.sensor.ac_on) {
+                g_state.sensor.active_load_accum_sec_today++;
             }
 
             // Scheduler Shutdown Countdown
             if (g_state.sensor.sched_shutdown_active && millis() >= g_state.sensor.sched_shutdown_timer_ms) {
-                if (!g_state.sensor.human_presence) {
+                bool presence_valid = g_state.rs485.dashboard.human_presence_valid;
+                bool occupied = presence_valid && g_state.sensor.human_presence;
+
+                if (presence_valid && !occupied) {
                     g_state.sensor.ac_on = false;
                     g_state.sensor.light_on = false;
                     g_state.sensor.sched_shutdown_active = false;
@@ -228,24 +234,37 @@ void Task_Net(void* pvParameters) {
                     target_temp = g_state.sensor.temp_target;
                     fan_speed = g_state.sensor.ac_fan_speed;
                     swing_mode = g_state.sensor.ac_swing_mode;
+                } else {
+                    g_state.sensor.sched_shutdown_timer_ms = millis() + (5 * 60 * 1000);
+                    g_state.ui_needs_update = true;
                 }
             }
 
             // NTP time checks & Midnight Rollover
             struct tm timeinfo;
             if (getLocalTime(&timeinfo, 5)) {
-                // Dynamic Anomaly Detection (if we have >=7 days history)
-                if (g_state.sensor.light_day_count >= 7) {
+                // Dynamic active-load anomaly detection (needs enough history and reliable occupancy)
+                bool presence_valid = g_state.rs485.dashboard.human_presence_valid;
+                bool confirmed_empty = presence_valid && !g_state.sensor.human_presence;
+                if (g_state.sensor.light_day_count >= 5 && presence_valid) {
                     uint32_t sum_min = 0;
-                    for (int i = 0; i < 7; i++) {
+                    uint8_t valid_days = (g_state.sensor.light_day_count >= 7) ? 7 : g_state.sensor.light_day_count;
+                    for (uint8_t i = 0; i < valid_days; i++) {
                         sum_min += g_state.sensor.light_history_min[i];
                     }
-                    float avg_min = (float)sum_min / 7.0f;
-                    float today_min = g_state.sensor.light_accum_sec_today / 60.0f;
+                    float avg_min = (valid_days > 0) ? ((float)sum_min / (float)valid_days) : 0.0f;
+                    float today_min = g_state.sensor.active_load_accum_sec_today / 60.0f;
                     bool after_hours = (timeinfo.tm_hour >= 22 || timeinfo.tm_hour < 6);
+                    float threshold_min = avg_min * 1.5f;
+                    float plus_60_min = avg_min + 60.0f;
+                    if (threshold_min < plus_60_min) threshold_min = plus_60_min;
 
                     bool old_alert = g_state.sensor.light_anomaly_alert;
-                    g_state.sensor.light_anomaly_alert = (today_min > 1.5f * avg_min) && after_hours && !g_state.sensor.human_presence;
+                    g_state.sensor.light_anomaly_alert =
+                        (avg_min >= 30.0f) &&
+                        (today_min > threshold_min) &&
+                        after_hours &&
+                        confirmed_empty;
                     if (old_alert != g_state.sensor.light_anomaly_alert) {
                         g_state.ui_needs_update = true;
                         save_needed = true;
@@ -261,15 +280,16 @@ void Task_Net(void* pvParameters) {
                 } else if (timeinfo.tm_mday != last_day) {
                     last_day = timeinfo.tm_mday;
 
-                    uint16_t light_min = g_state.sensor.light_accum_sec_today / 60;
+                    uint16_t light_min = g_state.sensor.active_load_accum_sec_today / 60;
                     uint32_t current_day = g_state.sensor.light_day_count;
                     g_state.sensor.light_history_min[current_day % 7] = light_min;
                     g_state.sensor.light_day_count++;
                     g_state.sensor.light_accum_sec_today = 0;
+                    g_state.sensor.active_load_accum_sec_today = 0;
                     g_state.ui_needs_update = true;
                     save_needed = true;
 
-                    Serial.printf("[Rollover] Midnight transition. Saved light active: %u min. Total days: %u\n", 
+                    Serial.printf("[Rollover] Midnight transition. Saved active load: %u min. Total days: %u\n",
                                   light_min, (unsigned)g_state.sensor.light_day_count);
                 }
             }

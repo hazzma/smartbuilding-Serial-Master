@@ -198,8 +198,10 @@ struct SensorData {
     bool     slave_online[2];
 
     // Projector Lux Verification fields
-    uint8_t  proj_verif_state;       // 0=OFF, 1=POWERING_ON, 2=ON, 3=RETRYING
+    uint8_t  proj_verif_state;       // 0=OFF, 1=POWERING_ON, 2=VERIFIED_ON, 3=RETRYING, 4=VERIFY_SKIPPED_NO_LUX, 5=FAILED
     float    proj_lux_initial;
+    float    proj_lux_baseline_avg;
+    bool     proj_lux_baseline_valid;
     uint32_t proj_warmup_timer_ms;
     uint8_t  proj_retry_count;
     bool     proj_hardware_failed;
@@ -211,6 +213,7 @@ struct SensorData {
     // Rolling light history fields
     uint32_t light_on_start_ms;
     uint32_t light_accum_sec_today;
+    uint32_t active_load_accum_sec_today;
     uint16_t light_history_min[7];
     uint32_t light_day_count;
     bool     light_anomaly_alert;

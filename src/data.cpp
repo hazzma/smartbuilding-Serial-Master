@@ -87,6 +87,8 @@ void data_load_dummy(BuildingState& state) {
 
         state.sensor.proj_verif_state = 0;
         state.sensor.proj_lux_initial = -1.0f;
+        state.sensor.proj_lux_baseline_avg = -1.0f;
+        state.sensor.proj_lux_baseline_valid = false;
         state.sensor.proj_warmup_timer_ms = 0;
         state.sensor.proj_retry_count = 0;
         state.sensor.proj_hardware_failed = false;
@@ -96,6 +98,7 @@ void data_load_dummy(BuildingState& state) {
 
         state.sensor.light_on_start_ms = 0;
         state.sensor.light_accum_sec_today = 0;
+        state.sensor.active_load_accum_sec_today = 0;
         memset(state.sensor.light_history_min, 0, sizeof(state.sensor.light_history_min));
         state.sensor.light_day_count = 0;
         state.sensor.light_anomaly_alert = false;
@@ -278,6 +281,7 @@ void data_load_device_config(BuildingState& state) {
 
     state.sensor.light_day_count = prefs.getUInt("l_day_cnt", 0);
     state.sensor.light_accum_sec_today = prefs.getUInt("l_acc_sec", 0);
+    state.sensor.active_load_accum_sec_today = prefs.getUInt("al_acc_sec", state.sensor.light_accum_sec_today);
     state.sensor.light_anomaly_alert = prefs.getBool("l_anom_alrt", false);
     for (int i = 0; i < 7; i++) {
         char key[16];
@@ -306,6 +310,7 @@ void data_save_device_config(BuildingState& state) {
 
     prefs.putUInt("l_day_cnt", state.sensor.light_day_count);
     prefs.putUInt("l_acc_sec", state.sensor.light_accum_sec_today);
+    prefs.putUInt("al_acc_sec", state.sensor.active_load_accum_sec_today);
     prefs.putBool("l_anom_alrt", state.sensor.light_anomaly_alert);
     for (int i = 0; i < 7; i++) {
         char key[16];
