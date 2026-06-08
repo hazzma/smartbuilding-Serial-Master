@@ -68,6 +68,8 @@ struct DashboardModel {
     bool  co2_valid;
     float lux;
     bool  lux_valid;
+    float lux_channel[4];
+    bool  lux_channel_valid[4];
     bool  human_presence;
     bool  human_presence_valid;
     bool  ac_available;
@@ -115,6 +117,8 @@ struct RS485SlaveState {
     bool     co2_valid;
     float    lux;
     bool     lux_valid;
+    float    lux_channel[4];
+    bool     lux_channel_valid[4];
     bool     human_presence;
     bool     human_presence_valid;
     bool     identity_synced;
@@ -198,10 +202,12 @@ struct SensorData {
     bool     slave_online[2];
 
     // Projector Lux Verification fields
-    uint8_t  proj_verif_state;       // 0=OFF, 1=POWERING_ON, 2=VERIFIED_ON, 3=RETRYING, 4=VERIFY_SKIPPED_NO_LUX, 5=FAILED
+    uint8_t  proj_verif_state;       // 0=OFF, 1=POWERING_ON, 2=VERIFIED_ON, 3=RETRYING, 4=NO_LUX, 5=CHECK_LUX, 6=CHECK_PROJECTOR
     float    proj_lux_initial;
     float    proj_lux_baseline_avg;
     bool     proj_lux_baseline_valid;
+    float    proj_lux_baseline[4];
+    bool     proj_lux_baseline_channel_valid[4];
     uint32_t proj_warmup_timer_ms;
     uint8_t  proj_retry_count;
     bool     proj_hardware_failed;

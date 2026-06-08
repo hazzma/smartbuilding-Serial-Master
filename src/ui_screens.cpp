@@ -479,9 +479,15 @@ void render_dashboard(BuildingState& state, int fps) {
 
     const char* proj_sub = nullptr;
     if (model.proj_hw_fail) {
-        proj_sub = "FAIL";
+        proj_sub = "CHK PROJ";
     } else if (model.proj_verif_state == 1 || model.proj_verif_state == 3) {
         proj_sub = "POWERING";
+    } else if (model.proj_verif_state == 4) {
+        proj_sub = "NO LUX";
+    } else if (model.proj_verif_state == 5) {
+        proj_sub = "CHK LUX";
+    } else if (model.proj_verif_state == 6) {
+        proj_sub = "CHK PROJ";
     }
 
     switch (model.layout) {

@@ -1294,9 +1294,13 @@ static void rs485_update_sensors_from_block(uint8_t address,
     if (capability & RS485_CAP_LUX) {
         uint32_t sum = 0;
         uint8_t valid = 0;
+        float lux_channels[4] = {0, 0, 0, 0};
+        bool lux_channel_valid[4] = {false, false, false, false};
         for (uint8_t i = 0; i < 4; i++) {
             uint16_t raw = block_count > (4 + i) ? block[4 + i] : RS485_MODBUS_U16_UNASSIGNED;
             if (!rs485_u16_value_valid(raw)) continue;
+            lux_channels[i] = (float)raw;
+            lux_channel_valid[i] = true;
             sum += raw;
             valid++;
         }
@@ -1305,10 +1309,13 @@ static void rs485_update_sensors_from_block(uint8_t address,
             if (slave_index < RS485_MAX_SLAVES) {
                 g_state.rs485.slaves[slave_index].lux = lux;
                 g_state.rs485.slaves[slave_index].lux_valid = true;
+                memcpy(g_state.rs485.slaves[slave_index].lux_channel, lux_channels, sizeof(lux_channels));
+                memcpy(g_state.rs485.slaves[slave_index].lux_channel_valid, lux_channel_valid, sizeof(lux_channel_valid));
             }
             g_state.sensor.lux = lux;
         } else if (slave_index < RS485_MAX_SLAVES) {
             g_state.rs485.slaves[slave_index].lux_valid = false;
+            memset(g_state.rs485.slaves[slave_index].lux_channel_valid, 0, sizeof(g_state.rs485.slaves[slave_index].lux_channel_valid));
         }
     }
 
@@ -1737,13 +1744,19 @@ void rs485_request_projector_command(bool power, uint8_t input) {
     g_state.rs485.projector_command_input = input;
 
     if (power) {
+        bool baseline_available = false;
+        for (uint8_t i = 0; i < 4; i++) {
+            if (g_state.sensor.proj_lux_baseline_channel_valid[i]) {
+                baseline_available = true;
+                break;
+            }
+        }
         g_state.sensor.projector_on = true;
-        if (g_state.sensor.lux < 0.0f || !g_state.sensor.proj_lux_baseline_valid) {
-            g_state.sensor.proj_verif_state = 4; // VERIFY_SKIPPED_NO_LUX
+        if (!baseline_available) {
+            g_state.sensor.proj_verif_state = 4; // NO_LUX
             g_state.sensor.proj_hardware_failed = false;
         } else {
             g_state.sensor.proj_verif_state = 1; // POWERING_ON
-            g_state.sensor.proj_lux_initial = g_state.sensor.proj_lux_baseline_avg;
             g_state.sensor.proj_warmup_timer_ms = millis() + 8000;
             g_state.sensor.proj_retry_count = 0;
             g_state.sensor.proj_hardware_failed = false;
@@ -1776,6 +1789,53 @@ static bool rs485_projector_lux_verified(float baseline_lux, float current_lux, 
     if (ratio_out) *ratio_out = ratio;
 
     return (delta_lux >= threshold_lux) || (ratio >= 1.25f && delta_lux >= 15.0f);
+}
+
+struct ProjectorLuxEval {
+    uint8_t baseline_channels;
+    uint8_t current_channels;
+    uint8_t verified_channels;
+    bool has_warning_channel;
+    float best_delta;
+    float best_threshold;
+    float best_ratio;
+    uint8_t best_channel;
+};
+
+static ProjectorLuxEval rs485_projector_eval_lux_locked() {
+    ProjectorLuxEval eval = {};
+    eval.best_delta = -100000.0f;
+    eval.best_channel = 0xFF;
+
+    for (uint8_t i = 0; i < 4; i++) {
+        if (!g_state.sensor.proj_lux_baseline_channel_valid[i]) continue;
+        eval.baseline_channels++;
+
+        if (!g_state.rs485.dashboard.lux_channel_valid[i]) {
+            eval.has_warning_channel = true;
+            continue;
+        }
+
+        eval.current_channels++;
+        float delta = 0.0f;
+        float threshold = 0.0f;
+        float ratio = 0.0f;
+        bool verified = rs485_projector_lux_verified(g_state.sensor.proj_lux_baseline[i],
+                                                     g_state.rs485.dashboard.lux_channel[i],
+                                                     &delta,
+                                                     &threshold,
+                                                     &ratio);
+        if (delta > eval.best_delta) {
+            eval.best_delta = delta;
+            eval.best_threshold = threshold;
+            eval.best_ratio = ratio;
+            eval.best_channel = i;
+        }
+        if (verified) eval.verified_channels++;
+        else eval.has_warning_channel = true;
+    }
+
+    return eval;
 }
 
 static void rs485_request_pairing_debug(uint32_t timeout_ms) {
@@ -2428,78 +2488,82 @@ static void rs485_handle_control_commands() {
 static void rs485_handle_projector_verification() {
     data_lock(g_state);
     if (!g_state.sensor.projector_on &&
-        g_state.sensor.lux >= 0.0f &&
-        (g_state.sensor.proj_verif_state == 0 || g_state.sensor.proj_verif_state == 5)) {
-        if (!g_state.sensor.proj_lux_baseline_valid) {
-            g_state.sensor.proj_lux_baseline_avg = g_state.sensor.lux;
+        (g_state.sensor.proj_verif_state == 0 || g_state.sensor.proj_verif_state == 6)) {
+        uint32_t sum = 0;
+        uint8_t count = 0;
+        for (uint8_t i = 0; i < 4; i++) {
+            if (!g_state.rs485.dashboard.lux_channel_valid[i]) continue;
+            float lux = g_state.rs485.dashboard.lux_channel[i];
+            if (!g_state.sensor.proj_lux_baseline_channel_valid[i]) {
+                g_state.sensor.proj_lux_baseline[i] = lux;
+                g_state.sensor.proj_lux_baseline_channel_valid[i] = true;
+            } else {
+                g_state.sensor.proj_lux_baseline[i] =
+                    (g_state.sensor.proj_lux_baseline[i] * 0.90f) + (lux * 0.10f);
+            }
+            sum += (uint32_t)lux;
+            count++;
+        }
+        if (count > 0) {
+            g_state.sensor.proj_lux_baseline_avg = (float)sum / count;
             g_state.sensor.proj_lux_baseline_valid = true;
-        } else {
-            g_state.sensor.proj_lux_baseline_avg =
-                (g_state.sensor.proj_lux_baseline_avg * 0.90f) + (g_state.sensor.lux * 0.10f);
         }
     }
 
     if (g_state.sensor.proj_verif_state == 1 || g_state.sensor.proj_verif_state == 3) {
-        if (g_state.sensor.lux < 0.0f || !g_state.sensor.proj_lux_baseline_valid) {
-            g_state.sensor.proj_verif_state = 4; // VERIFY_SKIPPED_NO_LUX
+        ProjectorLuxEval eval = rs485_projector_eval_lux_locked();
+        if (eval.baseline_channels == 0 || eval.current_channels == 0) {
+            g_state.sensor.proj_verif_state = 4; // NO_LUX
             g_state.sensor.proj_hardware_failed = false;
             g_state.ui_needs_update = true;
             data_unlock(g_state);
             return;
         }
 
-        float current_lux = g_state.sensor.lux;
-        float delta_lux = 0.0f;
-        float threshold_lux = 0.0f;
-        float ratio = 0.0f;
-        bool verified = rs485_projector_lux_verified(g_state.sensor.proj_lux_initial,
-                                                     current_lux,
-                                                     &delta_lux,
-                                                     &threshold_lux,
-                                                     &ratio);
-
-        if (verified) {
-            g_state.sensor.proj_verif_state = 2; // VERIFIED_ON
+        if (eval.verified_channels > 0) {
+            g_state.sensor.proj_verif_state =
+                (eval.has_warning_channel || eval.verified_channels < eval.baseline_channels) ? 5 : 2; // CHECK_LUX or VERIFIED_ON
             g_state.sensor.proj_hardware_failed = false;
             g_state.ui_needs_update = true;
-            Serial.printf("[Projector] Verified ON early. base=%.1f current=%.1f delta=%.1f threshold=%.1f ratio=%.2f\n",
-                          g_state.sensor.proj_lux_initial, current_lux, delta_lux, threshold_lux, ratio);
+            Serial.printf("[Projector] ON verified by lux ch%u. verified=%u/%u delta=%.1f threshold=%.1f ratio=%.2f state=%u\n",
+                          eval.best_channel + 1,
+                          eval.verified_channels,
+                          eval.baseline_channels,
+                          eval.best_delta,
+                          eval.best_threshold,
+                          eval.best_ratio,
+                          g_state.sensor.proj_verif_state);
             data_unlock(g_state);
             return;
         }
 
         if (millis() >= g_state.sensor.proj_warmup_timer_ms) {
-            Serial.printf("[Projector] Timer expired. base=%.1f current=%.1f delta=%.1f threshold=%.1f ratio=%.2f\n",
-                          g_state.sensor.proj_lux_initial, current_lux, delta_lux, threshold_lux, ratio);
+            Serial.printf("[Projector] Timer expired. verified=%u/%u best_ch=%u delta=%.1f threshold=%.1f ratio=%.2f\n",
+                          eval.verified_channels,
+                          eval.baseline_channels,
+                          eval.best_channel == 0xFF ? 0 : eval.best_channel + 1,
+                          eval.best_delta,
+                          eval.best_threshold,
+                          eval.best_ratio);
             
-            if (verified) {
-                g_state.sensor.proj_verif_state = 2; // VERIFIED_ON
-                g_state.sensor.proj_hardware_failed = false;
+            if (g_state.sensor.proj_verif_state == 1) {
+                g_state.sensor.proj_verif_state = 3; // RETRYING
+                g_state.sensor.proj_warmup_timer_ms = millis() + 8000;
+                g_state.sensor.proj_retry_count = 1;
                 g_state.ui_needs_update = true;
+
+                g_state.rs485.projector_command_requested = true;
+                g_state.rs485.projector_command_power = true;
+                g_state.rs485.projector_command_input = 0;
+
+                Serial.println("[Projector] First verification failed. Retrying ON.");
             } else {
-                if (g_state.sensor.proj_verif_state == 1) {
-                    g_state.sensor.proj_verif_state = 3; // RETRYING
-                    g_state.sensor.proj_warmup_timer_ms = millis() + 8000;
-                    g_state.sensor.proj_retry_count = 1;
-                    g_state.ui_needs_update = true;
-                    
-                    g_state.rs485.projector_command_requested = true;
-                    g_state.rs485.projector_command_power = true;
-                    g_state.rs485.projector_command_input = 0;
-                    
-                    Serial.println("[Projector] First verification failed. Retrying...");
-                } else {
-                    g_state.sensor.proj_verif_state = 5; // FAILED
-                    g_state.sensor.proj_hardware_failed = true;
-                    g_state.sensor.projector_on = false;
-                    g_state.ui_needs_update = true;
-                    
-                    g_state.rs485.projector_command_requested = true;
-                    g_state.rs485.projector_command_power = false;
-                    g_state.rs485.projector_command_input = 0;
-                    
-                    Serial.println("[Projector] Second verification failed. Declaring HW FAIL.");
-                }
+                g_state.sensor.proj_verif_state = 6; // CHECK_PROJECTOR
+                g_state.sensor.proj_hardware_failed = true;
+                g_state.sensor.projector_on = true;
+                g_state.ui_needs_update = true;
+
+                Serial.println("[Projector] Verification failed after retry. Keeping ON with CHECK_PROJECTOR warning.");
             }
         }
     }

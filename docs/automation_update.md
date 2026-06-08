@@ -30,42 +30,47 @@ Currently, the Projector IR control operates as a one-way (simplex) transmission
    and MQTT/server phrasing:
    - `PROJ_STATE_OFF`
    - `PROJ_STATE_POWERING_ON`
-   - `PROJ_STATE_VERIFYING`
    - `PROJ_STATE_VERIFIED_ON`
-   - `PROJ_STATE_VERIFY_SKIPPED_NO_LUX`
-   - `PROJ_STATE_FAILED`
+   - `PROJ_STATE_RETRYING`
+   - `PROJ_STATE_NO_LUX`
+   - `PROJ_STATE_CHECK_LUX`
+   - `PROJ_STATE_CHECK_PROJECTOR`
 2. **Ambient Baseline Learning**:
    - While the projector is OFF and Lux is valid, the master should learn the
-     room ambient baseline slowly.
+     room ambient baseline slowly per Lux channel.
    - The baseline should update only when the room is stable enough for a useful
      reference, not while a projector verification is active.
    - Minimal tracked values:
-     - `proj_lux_baseline_avg`
-     - optional `proj_lux_noise_avg` or last-stable-delta estimate
-     - `proj_lux_baseline_valid`
+     - `proj_lux_baseline[4]`
+     - `proj_lux_baseline_channel_valid[4]`
+     - optional aggregate `proj_lux_baseline_avg` for logging/status
    - The baseline is a room condition, not a projector state. It may persist in
      RAM first; NVS persistence can be added only if later testing shows boot
      recalibration is too slow.
 2. **Initial Trigger**:
    - When the user (via local HMI or MQTT control) triggers Projector ON:
-     1. Freeze the latest valid ambient baseline as `L_baseline`.
+     1. Freeze the latest valid ambient baseline for each Lux channel.
      2. Transition the internal state to `PROJ_STATE_POWERING_ON`.
      3. Send the IR ON Modbus command to the slave.
      4. Immediately publish `1` (ON) to MQTT topic `HD01/data/projector` to maintain responsive UI status.
      5. Start an 8-second `warmup_timer`.
 3. **Verification**:
    - After the 8-second `warmup_timer` expires:
-     1. Read the latest Lux value as $L_{current}$.
-     2. Calculate the difference: `delta_lux = L_current - L_baseline`.
+     1. Read the latest Lux channel values.
+     2. For every valid channel, calculate:
+        `delta_lux[i] = L_current[i] - L_baseline[i]`.
      3. Calculate an adaptive threshold:
-        `threshold_lux = max(20 lx, min(80 lx, L_baseline * 0.20))`.
+        `threshold_lux[i] = max(20 lx, min(80 lx, L_baseline[i] * 0.20))`.
      4. Optionally calculate a ratio guard:
-        `ratio = L_current / max(L_baseline, 1 lx)`.
-     5. Verification passes if either:
-        - `delta_lux >= threshold_lux`
-        - `ratio >= 1.25` and `delta_lux >= 15 lx`
+        `ratio[i] = L_current[i] / max(L_baseline[i], 1 lx)`.
+     5. A channel verifies projector ON if either:
+        - `delta_lux[i] >= threshold_lux[i]`
+        - `ratio[i] >= 1.25` and `delta_lux[i] >= 15 lx`
      6. If verification passes:
-        - Transition to `PROJ_STATE_VERIFIED_ON`.
+        - If every expected Lux channel is valid and verified, transition to
+          `PROJ_STATE_VERIFIED_ON`.
+        - If at least one channel verified ON but another expected channel is
+          invalid or unchanged, transition to `PROJ_STATE_CHECK_LUX`.
         - Clear Projector Alert Bit 5.
      7. If verification fails:
         - If `retry_count == 0`:
@@ -73,15 +78,17 @@ Currently, the Projector IR control operates as a one-way (simplex) transmission
           - Re-send the IR ON command to the slave.
           - Restart the 8-second timer.
         - If `retry_count == 1`:
-          - Transition to `PROJ_STATE_FAILED`, then return display/control state
-            to OFF.
-          - Set the **Projector Alert Flag** (Bit 5 in alert bitmask) to report a hardware failure.
-          - Publish `0` (OFF) to MQTT topic `HD01/data/projector` (reverting the initial optimistic state).
+          - Transition to `PROJ_STATE_CHECK_PROJECTOR`.
+          - Keep projector state ON because one-way IR verification cannot prove
+            the projector is actually OFF.
+          - Set the **Projector Alert Flag** (Bit 5 in alert bitmask) to request
+            projector/IR/path inspection.
+          - Keep publishing `1` (ON) to MQTT topic `HD01/data/projector`.
           - Reset `retry_count` to `0`.
 4. **No Valid Lux Fallback**:
-   - If Lux is invalid (`< 0.0 lx`) or no baseline is available, the master may
+   - If no BH1750 is installed, Lux is invalid (`< 0.0 lx`), or no baseline is available, the master may
      keep the optimistic projector ON state so the command remains responsive.
-   - The verification state must be `PROJ_STATE_VERIFY_SKIPPED_NO_LUX`, not
+   - The verification state must be `PROJ_STATE_NO_LUX`, not
      `PROJ_STATE_VERIFIED_ON`.
    - Projector Alert Bit 5 should not be raised from verification skip alone.
 

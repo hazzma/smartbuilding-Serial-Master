@@ -173,6 +173,8 @@ static void compose_dashboard_locked(BuildingState& state) {
     if (lux_slave && slave_has_enabled_capability(*lux_slave, CAP_LUX) && lux_slave->lux_valid) {
         next.lux = lux_slave->lux;
         next.lux_valid = true;
+        memcpy(next.lux_channel, lux_slave->lux_channel, sizeof(next.lux_channel));
+        memcpy(next.lux_channel_valid, lux_slave->lux_channel_valid, sizeof(next.lux_channel_valid));
     }
 
     const LogicalMapping& human_mapping = state.rs485.mappings[LOGICAL_HUMAN_PRESENCE_MAIN];

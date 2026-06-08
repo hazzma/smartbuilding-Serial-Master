@@ -76,7 +76,7 @@ should send numeric payloads.
 | 2 | 4 | Lux error / no valid Lux. |
 | 3 | 8 | Human/presence sensor error / no valid presence. |
 | 4 | 16 | LED/relay error. |
-| 5 | 32 | Projector error. |
+| 5 | 32 | Check projector / IR path. Raised when Projector ON was commanded but no Lux channel verified ON after retry. |
 | 6 | 64 | AC error. |
 | 7 | 128 | After-hours empty-room active-load anomaly. Recommended V2.7.1 trigger: valid time, valid empty occupancy, enough baseline days, and `active_load_minutes > max(avg_7d * 1.5, avg_7d + 60)` during 22:00-06:00. |
 

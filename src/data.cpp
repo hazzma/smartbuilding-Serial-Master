@@ -89,6 +89,8 @@ void data_load_dummy(BuildingState& state) {
         state.sensor.proj_lux_initial = -1.0f;
         state.sensor.proj_lux_baseline_avg = -1.0f;
         state.sensor.proj_lux_baseline_valid = false;
+        memset(state.sensor.proj_lux_baseline, 0, sizeof(state.sensor.proj_lux_baseline));
+        memset(state.sensor.proj_lux_baseline_channel_valid, 0, sizeof(state.sensor.proj_lux_baseline_channel_valid));
         state.sensor.proj_warmup_timer_ms = 0;
         state.sensor.proj_retry_count = 0;
         state.sensor.proj_hardware_failed = false;
@@ -242,6 +244,8 @@ void data_load_dummy(BuildingState& state) {
         state.rs485.dashboard.co2_valid = false;
         state.rs485.dashboard.lux = -1.0f;
         state.rs485.dashboard.lux_valid = false;
+        memset(state.rs485.dashboard.lux_channel, 0, sizeof(state.rs485.dashboard.lux_channel));
+        memset(state.rs485.dashboard.lux_channel_valid, 0, sizeof(state.rs485.dashboard.lux_channel_valid));
         state.rs485.dashboard.human_presence = false;
         state.rs485.dashboard.human_presence_valid = false;
         state.rs485.dashboard.ac_available = false;

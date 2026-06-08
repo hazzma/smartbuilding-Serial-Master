@@ -61,6 +61,15 @@ What changed:
 - Projector verification SHOULD use an adaptive Lux baseline learned while the
   projector is OFF. Fixed `50 lx` delta checks are allowed only as fallback or
   legacy behavior.
+- Projector verification SHALL treat BH1750/Lux as optional. If no Lux feedback
+  is available, projector ON/OFF SHALL still work as normal IR control and the
+  UI/status SHOULD show `NO_LUX` rather than failure.
+- If one Lux channel verifies projector ON while another expected Lux channel is
+  invalid or unchanged, projector state SHALL remain ON and the UI/status SHOULD
+  show `CHECK_LUX` without raising Alert Bit 5.
+- If no Lux channel verifies projector ON after one retry, projector state SHALL
+  remain ON, UI/status SHOULD show `CHECK_PROJECTOR`, and Alert Bit 5 SHOULD be
+  raised for inspection.
 - Occupancy safety rules SHALL only trust `human_presence` when the presence
   value is valid. If presence is invalid, remote destructive commands SHOULD
   fail conservative and Alert Bit 3 SHOULD remain raised.

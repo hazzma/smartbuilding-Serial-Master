@@ -187,7 +187,7 @@ Bit assignments:
 | 2 | 4 | Lux error / no valid Lux. |
 | 3 | 8 | Human/presence sensor error / no valid presence. |
 | 4 | 16 | LED/relay error. |
-| 5 | 32 | Projector error. |
+| 5 | 32 | Check projector / IR path. Projector command was sent, but Lux verification did not prove ON after retry. |
 | 6 | 64 | AC error. |
 | 7 | 128 | After-hours empty-room active-load anomaly. Server/Flutter should phrase this as an empty-room energy anomaly, not as a sensor fault. |
 

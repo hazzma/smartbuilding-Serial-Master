@@ -625,20 +625,24 @@ V2.7.1 projector verification state display:
 ```text
 OFF
 POWERING_ON
-VERIFYING
 VERIFIED_ON
-VERIFY_SKIPPED_NO_LUX
-FAILED
+RETRYING
+NO_LUX
+CHECK_LUX
+CHECK_PROJECTOR
 ```
 
 UI behavior:
-- `POWERING_ON` / `VERIFYING` SHOULD show a pending visual state while keeping
+- `POWERING_ON` / `RETRYING` SHOULD show a pending visual state while keeping
   the command responsive.
 - `VERIFIED_ON` SHOULD render as normal ON.
-- `VERIFY_SKIPPED_NO_LUX` SHOULD render as ON with a subtle warning/status cue,
-  because the command was sent but Lux feedback was unavailable.
-- `FAILED` SHOULD render as OFF or failed command state and should expose the
-  projector alert from Alert Bit 5.
+- `NO_LUX` SHOULD render as ON with a subtle warning/status cue, because the
+  command was sent but no optional BH1750/Lux feedback was available.
+- `CHECK_LUX` SHOULD render as ON with a warning cue, because at least one Lux
+  channel verified ON while another expected channel was invalid or unchanged.
+- `CHECK_PROJECTOR` SHOULD render as ON with an error cue and expose Alert Bit 5,
+  because the master sent the IR command but no Lux channel verified projector ON
+  after retry.
 
 If LED also exists:
 
