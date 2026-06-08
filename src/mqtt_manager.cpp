@@ -38,14 +38,17 @@ static void mqtt_set_connected_state(bool connected) {
 }
 
 enum MqttTopicKind : uint8_t {
-    MQTT_TOPIC_SUHU,
+    MQTT_TOPIC_TEMP,
     MQTT_TOPIC_CO2,
     MQTT_TOPIC_LUX,
     MQTT_TOPIC_HUMAN,
     MQTT_TOPIC_LED,
     MQTT_TOPIC_AC,
     MQTT_TOPIC_PROJECTOR,
-    MQTT_TOPIC_MASTER
+    MQTT_TOPIC_ALERT,
+    MQTT_TOPIC_ACTIVE,
+    MQTT_TOPIC_MASTER,
+    MQTT_TOPIC_SCHEDULE
 };
 
 static const char* mqtt_class_name_locked() {
@@ -59,16 +62,34 @@ static const char* mqtt_device_name_locked() {
 static void mqtt_build_topic_locked(MqttTopicKind kind, char* out, size_t out_len) {
     const char* suffix = "status";
     switch (kind) {
-        case MQTT_TOPIC_SUHU: suffix = "suhu"; break;
+        case MQTT_TOPIC_TEMP: suffix = "temp"; break;
         case MQTT_TOPIC_CO2: suffix = "co2"; break;
         case MQTT_TOPIC_LUX: suffix = "lux"; break;
         case MQTT_TOPIC_HUMAN: suffix = "human"; break;
         case MQTT_TOPIC_LED: suffix = "led"; break;
         case MQTT_TOPIC_AC: suffix = "ac"; break;
         case MQTT_TOPIC_PROJECTOR: suffix = "projector"; break;
+        case MQTT_TOPIC_ALERT: suffix = "alert"; break;
+        case MQTT_TOPIC_ACTIVE: suffix = "active"; break;
         case MQTT_TOPIC_MASTER: suffix = "master"; break;
+        case MQTT_TOPIC_SCHEDULE: suffix = "schedule"; break;
     }
-    snprintf(out, out_len, "%s/%s", mqtt_class_name_locked(), suffix);
+    snprintf(out, out_len, "%s/%s/%s",
+             mqtt_class_name_locked(),
+             "data",
+             suffix);
+}
+
+static void mqtt_build_control_topic_locked(MqttTopicKind kind, char* out, size_t out_len) {
+    const char* suffix = "status";
+    switch (kind) {
+        case MQTT_TOPIC_LED: suffix = "led"; break;
+        case MQTT_TOPIC_AC: suffix = "ac"; break;
+        case MQTT_TOPIC_PROJECTOR: suffix = "projector"; break;
+        case MQTT_TOPIC_SCHEDULE: suffix = "schedule"; break;
+        default: break;
+    }
+    snprintf(out, out_len, "%s/control/%s", mqtt_class_name_locked(), suffix);
 }
 
 static bool mqtt_publish_raw(const char* topic, const char* payload, bool retained, const char* label) {
@@ -371,17 +392,15 @@ static void mqtt_publish_legacy_state() {
 }
 
 static void mqtt_publish_v2_state() {
-    char topic_suhu[48];
+    char topic_temp[64];
     char topic_co2[48];
     char topic_lux[48];
     char topic_human[48];
     char topic_led[48];
     char topic_ac[48];
     char topic_projector[48];
-    char topic_master[48];
-
-    JsonDocument master_doc;
-
+    char topic_alert[64];
+    char topic_active[64];
     char temp_payload[16];
     char co2_payload[16];
     char lux_payload[16];
@@ -389,17 +408,19 @@ static void mqtt_publish_v2_state() {
     char led_payload[8];
     char ac_payload[12];
     char projector_payload[8];
+    char alert_payload[8];
 
     data_lock(g_state);
 
-    mqtt_build_topic_locked(MQTT_TOPIC_SUHU, topic_suhu, sizeof(topic_suhu));
+    mqtt_build_topic_locked(MQTT_TOPIC_TEMP, topic_temp, sizeof(topic_temp));
     mqtt_build_topic_locked(MQTT_TOPIC_CO2, topic_co2, sizeof(topic_co2));
     mqtt_build_topic_locked(MQTT_TOPIC_LUX, topic_lux, sizeof(topic_lux));
     mqtt_build_topic_locked(MQTT_TOPIC_HUMAN, topic_human, sizeof(topic_human));
     mqtt_build_topic_locked(MQTT_TOPIC_LED, topic_led, sizeof(topic_led));
     mqtt_build_topic_locked(MQTT_TOPIC_AC, topic_ac, sizeof(topic_ac));
     mqtt_build_topic_locked(MQTT_TOPIC_PROJECTOR, topic_projector, sizeof(topic_projector));
-    mqtt_build_topic_locked(MQTT_TOPIC_MASTER, topic_master, sizeof(topic_master));
+    mqtt_build_topic_locked(MQTT_TOPIC_ALERT, topic_alert, sizeof(topic_alert));
+    mqtt_build_topic_locked(MQTT_TOPIC_ACTIVE, topic_active, sizeof(topic_active));
 
     float sum = 0.0f;
     uint8_t valid_temp = 0;
@@ -447,69 +468,27 @@ static void mqtt_publish_v2_state() {
 
     snprintf(projector_payload, sizeof(projector_payload), "%u", g_state.sensor.projector_on ? 1 : 0);
 
-    master_doc["type"] = "smart_building_master_status";
-    master_doc["device_name"] = mqtt_device_name_locked();
-    master_doc["class_name"] = mqtt_class_name_locked();
-    master_doc["firmware_version"] = mqtt_fw_version;
-    master_doc["firmware_by"] = "Hansel Kay CE LAB";
-    master_doc["wifi_connected"] = g_state.net.wifi_connected;
-    master_doc["lan_connected"] = g_state.net.lan_connected;
-    master_doc["mqtt_connected"] = mqttClient.connected();
-    master_doc["rs485_bus_ok"] = g_state.rs485.bus_ok;
-    master_doc["device_registry_status"] = mqtt_pairing_candidate_unknown_locked()
-                                               ? "UNPAIRED_DEVICE_DETECTED"
-                                               : "OK";
-    master_doc["timestamp_ms"] = millis();
-
-    JsonArray registry = master_doc["registry"].to<JsonArray>();
-    uint8_t registry_count = g_state.rs485.slave_count;
-    if (registry_count > RS485_MAX_SLAVES) registry_count = RS485_MAX_SLAVES;
-    for (uint8_t i = 0; i < registry_count; i++) {
-        const RS485SlaveState& slave = g_state.rs485.slaves[i];
-        if (slave.address == 0 && slave.uid == 0 && slave.mac == 0 && !slave.online) continue;
-
-        JsonObject item = registry.add<JsonObject>();
-        item["address"] = slave.address;
-
-        char uid_buf[12];
-        snprintf(uid_buf, sizeof(uid_buf), "%08lX", (unsigned long)slave.uid);
-        item["uid"] = uid_buf;
-
-        char mac_buf[18];
-        mqtt_format_mac(slave.mac, mac_buf, sizeof(mac_buf));
-        item["mac"] = mac_buf;
-        item["name"] = slave.name[0] ? slave.name : "Node";
-        item["room"] = slave.room[0] ? slave.room : mqtt_class_name_locked();
-        item["profile"] = device_profile_name(slave.profile);
-        item["status"] = device_registry_status_name(mqtt_slave_status(slave));
-        if (slave.last_seen != 0) item["last_seen_ms"] = slave.last_seen;
-        else item["last_seen_ms"].set(nullptr);
-    }
-
-    if (mqtt_pairing_candidate_unknown_locked()) {
-        JsonObject unknown = master_doc["pairing_candidate"].to<JsonObject>();
-        const RS485SlaveState& candidate = g_state.rs485.pairing_candidate;
-        unknown["status"] = "UNPAIRED_DEVICE_DETECTED";
-        unknown["address"] = candidate.address;
-        char uid_buf[12];
-        snprintf(uid_buf, sizeof(uid_buf), "%08lX", (unsigned long)candidate.uid);
-        unknown["uid"] = uid_buf;
-        char mac_buf[18];
-        mqtt_format_mac(candidate.mac, mac_buf, sizeof(mac_buf));
-        unknown["mac"] = mac_buf;
-        unknown["profile"] = device_profile_name(candidate.profile);
-    }
+    uint16_t alert_mask = 0;
+    if (valid_temp == 0) alert_mask |= (1 << 0);
+    if (!g_state.rs485.dashboard.co2_valid) alert_mask |= (1 << 1);
+    if (!g_state.rs485.dashboard.lux_valid) alert_mask |= (1 << 2);
+    if (!g_state.rs485.dashboard.human_presence_valid) alert_mask |= (1 << 3);
+    if (!g_state.rs485.bus_ok && light_id > 1) alert_mask |= (1 << 4);
+    if (!g_state.rs485.bus_ok && g_state.rs485.dashboard.projector_available) alert_mask |= (1 << 5);
+    if (!g_state.rs485.bus_ok && g_state.rs485.dashboard.ac_available) alert_mask |= (1 << 6);
+    snprintf(alert_payload, sizeof(alert_payload), "%u", alert_mask);
 
     data_unlock(g_state);
 
-    mqtt_publish_raw(topic_suhu, temp_payload, true, "temperature");
+    mqtt_publish_raw(topic_temp, temp_payload, true, "temperature");
     mqtt_publish_raw(topic_co2, co2_payload, true, "co2");
     mqtt_publish_raw(topic_lux, lux_payload, true, "lux");
     mqtt_publish_raw(topic_human, human_payload, true, "human");
     mqtt_publish_raw(topic_led, led_payload, true, "led");
     mqtt_publish_raw(topic_ac, ac_payload, true, "ac");
     mqtt_publish_raw(topic_projector, projector_payload, true, "projector");
-    mqtt_publish_json(topic_master, master_doc, true, "master-status");
+    mqtt_publish_raw(topic_alert, alert_payload, true, "alert");
+    mqtt_publish_raw(topic_active, "1", true, "active");
 }
 
 static void mqtt_publish_state() {
@@ -521,9 +500,9 @@ static void mqtt_callback(char* topic, byte* payload, unsigned int length) {
     char topic_ac[48];
     char topic_projector[48];
     data_lock(g_state);
-    mqtt_build_topic_locked(MQTT_TOPIC_LED, topic_led, sizeof(topic_led));
-    mqtt_build_topic_locked(MQTT_TOPIC_AC, topic_ac, sizeof(topic_ac));
-    mqtt_build_topic_locked(MQTT_TOPIC_PROJECTOR, topic_projector, sizeof(topic_projector));
+    mqtt_build_control_topic_locked(MQTT_TOPIC_LED, topic_led, sizeof(topic_led));
+    mqtt_build_control_topic_locked(MQTT_TOPIC_AC, topic_ac, sizeof(topic_ac));
+    mqtt_build_control_topic_locked(MQTT_TOPIC_PROJECTOR, topic_projector, sizeof(topic_projector));
     data_unlock(g_state);
 
     if (strcmp(topic, topic_led) == 0) {
@@ -778,25 +757,31 @@ void mqtt_init() {
 }
 
 static void mqtt_subscribe_v2_topics() {
-    char topic[48];
+    char topic[64];
 
     data_lock(g_state);
-    mqtt_build_topic_locked(MQTT_TOPIC_LED, topic, sizeof(topic));
+    mqtt_build_control_topic_locked(MQTT_TOPIC_LED, topic, sizeof(topic));
     data_unlock(g_state);
     mqttClient.subscribe(topic, 1);
     Serial.printf("[MQTT] Subscribe LED cmd topic=%s qos=1 retain=false\n", topic);
 
     data_lock(g_state);
-    mqtt_build_topic_locked(MQTT_TOPIC_AC, topic, sizeof(topic));
+    mqtt_build_control_topic_locked(MQTT_TOPIC_AC, topic, sizeof(topic));
     data_unlock(g_state);
     mqttClient.subscribe(topic, 1);
     Serial.printf("[MQTT] Subscribe AC cmd topic=%s qos=1 retain=false\n", topic);
 
     data_lock(g_state);
-    mqtt_build_topic_locked(MQTT_TOPIC_PROJECTOR, topic, sizeof(topic));
+    mqtt_build_control_topic_locked(MQTT_TOPIC_PROJECTOR, topic, sizeof(topic));
     data_unlock(g_state);
     mqttClient.subscribe(topic, 1);
     Serial.printf("[MQTT] Subscribe Projector cmd topic=%s qos=1 retain=false\n", topic);
+
+    data_lock(g_state);
+    mqtt_build_control_topic_locked(MQTT_TOPIC_SCHEDULE, topic, sizeof(topic));
+    data_unlock(g_state);
+    mqttClient.subscribe(topic, 1);
+    Serial.printf("[MQTT] Subscribe Schedule cmd topic=%s qos=1 retain=false\n", topic);
 }
 
 static void reconnect() {
@@ -806,6 +791,7 @@ static void reconnect() {
         char pass[64];
         uint16_t port = 0;
         bool use_tls = false;
+        char active_topic[64];
         data_lock(g_state);
         strncpy(server, g_state.net.mqtt_server, sizeof(server) - 1);
         server[sizeof(server) - 1] = '\0';
@@ -815,6 +801,7 @@ static void reconnect() {
         pass[sizeof(pass) - 1] = '\0';
         port = g_state.net.mqtt_port;
         use_tls = g_state.net.mqtt_use_tls;
+        mqtt_build_topic_locked(MQTT_TOPIC_ACTIVE, active_topic, sizeof(active_topic));
         data_unlock(g_state);
 
         if (g_state.net.net_priority == 1 && g_state.net.lan_connected) {
@@ -838,7 +825,7 @@ static void reconnect() {
                       use_tls ? "yes" : "no",
                       user[0] ? user : "(empty)");
         String clientId = "MasterS3-" + String(random(0xffff), HEX);
-        if (mqttClient.connect(clientId.c_str(), user, pass)) {
+        if (mqttClient.connect(clientId.c_str(), user, pass, active_topic, 1, true, "0")) {
             Serial.println("OK");
             if (mqtt_topic_pub && mqtt_topic_pub[0]) {
                 bool cleared = mqttClient.publish(mqtt_topic_pub, "", true);

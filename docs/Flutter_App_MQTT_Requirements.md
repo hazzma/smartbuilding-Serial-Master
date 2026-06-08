@@ -6,8 +6,10 @@ Dokumen ini adalah requirement MQTT untuk aplikasi Flutter yang memonitor dan me
 
 Changed:
 - Firmware V2 memakai topic MQTT per data type, bukan satu JSON besar sebagai state utama.
-- Command actuator dikirim ke topic actuator, lalu master meneruskan command ke slave target.
+- Command actuator dikirim ke topic `control`, lalu master meneruskan command ke slave target.
 - State actuator dipublish ulang hanya setelah target slave mengonfirmasi state terbaru.
+- Server dapat menjadi consumer utama MQTT, melakukan phrasing/normalisasi data,
+  lalu menyediakan data untuk Flutter. Master tetap mengirim payload numerik ringan.
 
 Why:
 - Per-topic MQTT membuat dashboard lebih sederhana, payload lebih kecil, dan setiap sensor/actuator bisa disinkronkan secara terpisah.
@@ -23,7 +25,8 @@ Implementation effect:
 
 Changed:
 - Topic MQTT utama sekarang mengikuti format class/room + data type.
-- Format runtime Firmware V2.5 adalah `<class_name>/<data_type>`.
+- Format runtime Firmware V2.5 adalah `<class_name>/data/<data_type>` untuk publish
+  dan `<class_name>/control/<command_type>` untuk command.
 
 Why:
 - User dan dashboard perlu melihat data berdasarkan ruang/class dan jenis data secara langsung.
@@ -35,32 +38,39 @@ Implementation effect:
 - App harus membentuk topic dari class name yang sama dengan master.
 
 Exact publish topics for class `HD01`:
-- `HD01/suhu`
-- `HD01/co2`
-- `HD01/lux`
-- `HD01/human`
-- `HD01/led`
+- `HD01/data/temp`
+- `HD01/data/co2`
+- `HD01/data/lux`
+- `HD01/data/human`
+- `HD01/data/led`
+- `HD01/data/projector`
+- `HD01/data/ac`
+- `HD01/data/alert`
+- `HD01/data/active`
 
 Exact subscribe/control topics for class `HD01`:
-- `HD01/led`
-- `HD01/ac`
-- `HD01/projector`
+- `HD01/control/led`
+- `HD01/control/ac`
+- `HD01/control/projector`
+- `HD01/control/schedule`
 
 Class name examples:
-- If class/room name is `HD01`, default topic labels are derived as `HD01/<data_type>`.
-- If class/room name is `LA2`, default topic labels are derived as `LA2/<data_type>`.
-- Example: `LA2/co2`, `LA2/suhu`, `LA2/led`.
+- If class/room name is `HD01`, default topic labels are derived as `HD01/data/<data_type>` and `HD01/control/<command_type>`.
+- If class/room name is `LA2`, default topic labels are derived as `LA2/data/<data_type>` and `LA2/control/<command_type>`.
+- Example: `LA2/data/co2`, `LA2/data/temp`, `LA2/control/led`.
 
 Topic naming rule:
-- Topic SHALL use `<class_name>/<data_type>`.
+- Data topics SHALL use `<class_name>/data/<data_type>`.
+- Command topics SHALL use `<class_name>/control/<command_type>`.
 - Class name comes from the editable and persisted master class name.
-- Supported data type suffixes are `suhu`, `co2`, `lux`, `human`, `led`, `ac`,
-  `projector`, and `master`.
+- Supported data type suffixes are `temp`, `co2`, `lux`, `human`, `led`, `ac`,
+  `projector`, `alert`, and `active`.
+- Supported control suffixes are `led`, `ac`, `projector`, and `schedule`.
 
 Direction rule:
-- Firmware V2.5 uses the same literal actuator topic for state and command.
-- Firmware MUST guard against self-echo and MUST NOT treat its own confirmed
-  state publish as a new command.
+- Firmware V2.5 separates state and command topics.
+- Firmware publishes confirmed state on `data` topics and listens on `control`
+  topics.
 
 ---
 
@@ -88,6 +98,8 @@ Payload rules:
 - Presence: integer payload, example values `0` or `1`.
 - LED: integer payload, `1` means ON and `0` means OFF.
 - Projector: integer payload, `1` means ON and `0` means OFF.
+- Alert: decimal integer bitmask.
+- Active: retained integer `1`; MQTT LWT sets retained `0` on unexpected disconnect.
 - Simple scalar sensors: integer payload unless a later spec explicitly says otherwise.
 
 MQTT delivery policy:
@@ -95,10 +107,11 @@ MQTT delivery policy:
 | MQTT message type | QoS | Retain | App behavior |
 |---|---:|---|---|
 | Simple sensor publish | 0 | true | App may receive last-known integer value immediately after subscribe. |
-| LED/projector state publish | 1 | true | App should treat retained `1`/`0` as last confirmed actuator state. |
+| LED/projector state publish | 0 | true | App should treat retained `1`/`0` as last confirmed actuator state. |
 | Temperature average publish | 0 | true | App may receive last-known average temperature immediately after subscribe. |
+| Alert publish | 0 | true | Server/app decodes decimal bitmask. |
+| Active publish / LWT | 1 | true | Retained `1` while online; retained `0` on MQTT LWT. |
 | Actuator command | 1 | false | App commands must not be retained; old commands must not replay after reconnect. |
-| Master/device status publish | 1 | true | App may use retained status and device metadata for discovery/last-known master state. |
 
 What changed: QoS/retain policy is explicitly defined for Firmware V2.
 
@@ -115,7 +128,7 @@ Why:
 - The dashboard/app only needs the room-level temperature summary for MQTT, while detailed per-slot temperature stays local to the master UI.
 
 Implementation effect:
-- Flutter app parses `HD01/suhu` as an integer.
+- Flutter app or server parses `HD01/data/temp` as an integer.
 - Payload `-1` means no valid temperature slot is currently available.
 
 Example payload:
@@ -152,6 +165,40 @@ Parsing rules:
 - `0` means OFF.
 - Firmware command input accepts `1`, `0`, `on`, `off`, `true`, or `false`.
 
+### 2.3 Alert Publish Payload
+
+Changed:
+- Alert is published as one decimal integer bitmask on `HD01/data/alert`.
+
+Why:
+- Decimal bitmask keeps the ESP32 payload numeric and small while still allowing
+  server/Flutter to decode multiple simultaneous alert states.
+
+Implementation effect:
+- Server should decode alert flags before phrasing them for Flutter.
+- Flutter may also decode the bitmask directly if it subscribes to MQTT.
+
+Bit assignments:
+
+| Bit | Decimal | Meaning |
+|---:|---:|---|
+| 0 | 1 | Temperature error / no valid temperature. |
+| 1 | 2 | CO2 error / no valid CO2. |
+| 2 | 4 | Lux error / no valid Lux. |
+| 3 | 8 | Human/presence sensor error / no valid presence. |
+| 4 | 16 | LED/relay error. |
+| 5 | 32 | Projector error. |
+| 6 | 64 | AC error. |
+| 7 | 128 | Presence detected outside schedule. Reserved until schedule logic is implemented. |
+
+Example:
+
+```text
+131
+```
+
+Meaning: temperature error + CO2 error + presence outside schedule.
+
 ---
 
 ## 3. Subscribe And Command Requirements
@@ -172,22 +219,23 @@ Implementation effect:
 - Firmware must route actuator commands to the slave that owns the actuator.
 
 Exact subscribe/control topics for class `HD01`:
-- `HD01/led`
-- `HD01/ac`
-- `HD01/projector`
+- `HD01/control/led`
+- `HD01/control/ac`
+- `HD01/control/projector`
+- `HD01/control/schedule`
 
 Direction rule:
-- These are the same literal topics used by the master to publish actuator state.
-- The master MUST ignore confirmed state payload shapes in its command handler,
-  and the app MUST not treat its own command echo as confirmed state.
+- Actuator state and command topics are separated.
+- Master publishes state to `HD01/data/...`.
+- Master listens to commands on `HD01/control/...`.
 
 Command flow:
-1. Flutter app publishes actuator command to the selected class/room actuator topic.
+1. Flutter app or server publishes actuator command to the selected class/room `control` topic.
 2. Master receives the MQTT command.
 3. Master forwards the command to the target slave device.
 4. Target slave applies command and reports command status/result.
-5. Master republishes the updated actuator state or command-result topic.
-6. Flutter app updates UI from the republished state/result.
+5. Master republishes the updated actuator state to the matching `data` topic.
+6. Server/Flutter updates UI from the republished state/result.
 
 IR command status rule:
 - AC and Projector command status SHALL be displayed as command-result status only, such as pending, success, busy, or failed.
@@ -288,16 +336,16 @@ Settings / Device Info requirements:
 - Device Info SHALL show firmware version, for example `Firmware V2`.
 - Device Info SHALL show `Firmware By Hansel Kay CE LAB`.
 - Device Info SHALL allow editing class/room name.
-- Editing class/room name SHALL update default topic labels/templates, for example `HD01` -> `HD01/co2` and `LA2` -> `LA2/co2`.
+- Editing class/room name SHALL update default topic labels/templates, for example `HD01` -> `HD01/data/co2` and `LA2` -> `LA2/data/co2`.
 
 Home SHOULD show:
-- Average temperature from the integer `suhu` topic.
+- Average temperature from the integer `data/temp` topic.
 - CO2 integer value.
 - Lux integer value if available.
 - Presence integer/binary value if available.
-- LED ON/OFF from the integer `led` topic.
+- LED ON/OFF from the integer `data/led` topic.
 - One AC control panel if configured; master mirrors to AC 1 and AC 2 when both are exposed.
-- Projector ON/OFF from the integer `projector` topic if configured.
+- Projector ON/OFF from the integer `data/projector` topic if configured.
 
 Control behavior:
 - App SHALL send commands only for available actuator topics.

@@ -57,7 +57,8 @@ Edited files:
 - `docs/FSD_Smart_Building_Master_UPDATED.md`
 
 Open items:
-- [x] Firmware V2.5 production topic format is finalized as `<class_name>/<data_type>`.
+- [x] Superseded: early V2.5 draft used `<class_name>/<data_type>`.
+- [x] Current V2.5 production topic format is `<class_name>/data/<data_type>` for publish and `<class_name>/control/<command_type>` for command.
 - [ ] Final invalid/stale representation for integer MQTT topics should be confirmed before implementation.
 
 ---
@@ -70,17 +71,17 @@ Scope:
 
 Completed:
 - [x] `docs/Flutter_App_MQTT_Requirements.md` now describes Firmware V2 as per-topic MQTT.
-- [x] Exact runtime publish topics are documented using `<class_name>/<data_type>`.
+- [x] Exact runtime publish topics are documented using `<class_name>/data/<data_type>`.
 - [x] General/simple sensor values use integer payloads.
 - [x] V2.5 update: temperature publishes integer average Celsius; older JSON-per-position wording is historical.
 - [x] V2.5 update: LED publishes integer `1` or `0`; older JSON-per-position wording is historical.
 - [x] Subscribe/control examples include LED, AC, and Projector.
 - [x] Command flow is documented as: app command -> master -> target slave -> confirmation -> republish state.
 - [x] Old single master state JSON is retained only as Legacy / V1 Notes.
-- [x] MQTT actuator state and command traffic use the same literal topic with firmware self-echo guards.
+- [x] Superseded: MQTT actuator state and command traffic no longer use the same literal topic; current flow separates `data` and `control`.
 - [x] Temperature and LED scalar payload examples no longer include documentation metadata as payload fields.
 - [x] Superseded by V2.5/V2.2 draft: AC command payload is now documented as `PPTTFFSS`; Projector command payload is scalar `1` or `0`.
-- [x] Class/room naming now drives default topic labels such as `HD01/co2` and `LA2/co2`.
+- [x] Class/room naming now drives default topic labels such as `HD01/data/co2`, `HD01/control/led`, `LA2/data/co2`, and `LA2/control/led`.
 - [x] MQTT QoS/retain policy is documented: simple sensors QoS 0 retain true, temperature average QoS 0 retain true, LED/projector state QoS 1 retain true, actuator commands QoS 1 retain false, master status QoS 1 retain true.
 
 Edited files:
@@ -140,7 +141,8 @@ Edited files:
 Open items:
 - [ ] Final Flutter visual design and detailed widget layout are still implementation tasks.
 - [ ] Device discovery UX over MQTT may be refined while keeping the finalized
-  `<class_name>/<data_type>` topic naming.
+  current topic naming: `<class_name>/data/<data_type>` for publish and
+  `<class_name>/control/<command_type>` for command.
 
 ---
 
@@ -409,8 +411,10 @@ MQTT:
 - Simple sensor payloads are integers.
 - Temperature payload is integer average Celsius. `-1` means no valid temperature.
 - LED payload is integer `1` or `0`.
-- Runtime topic names like `HD01/suhu` are generated from the editable
-  class/room name using `<class_name>/<data_type>`.
+- Current runtime topic names like `HD01/data/temp`, `HD01/data/co2`,
+  and `HD01/control/led` are generated from the editable class/room name
+  using `<class_name>/data/<data_type>` and
+  `<class_name>/control/<command_type>`.
 
 Flutter app:
 - App should render Home, Devices, and Settings.

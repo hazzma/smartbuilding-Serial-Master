@@ -3,37 +3,47 @@
 ## Runtime Topic Format
 
 Firmware V2.5 uses the saved master class name as the MQTT topic prefix.
-The runtime format is:
+The current lightweight runtime format is:
 
 ```text
-<class_name>/<data_type>
+<class_name>/data/<data_type>
+<class_name>/control/<command_type>
 ```
 
 For a master named `HD01`, the exact V2 topics are:
 
 ```text
-HD01/suhu
-HD01/co2
-HD01/lux
-HD01/human
-HD01/led
-HD01/ac
-HD01/projector
-HD01/master
+HD01/data/temp
+HD01/data/co2
+HD01/data/lux
+HD01/data/human
+HD01/data/led
+HD01/data/projector
+HD01/data/ac
+HD01/data/alert
+HD01/data/active
+
+HD01/control/led
+HD01/control/projector
+HD01/control/ac
+HD01/control/schedule
 ```
 
 Changing the class name in the master changes the prefix automatically. For
-example, class `LA2` publishes to `LA2/suhu`, `LA2/co2`, and the other
-`LA2/<data_type>` topics.
+example, class `LA2` publishes to `LA2/data/temp`, `LA2/data/co2`, and the
+other `LA2/data/<data_type>` topics.
 
-Actuator state and commands currently use the same literal topics:
-`<class_name>/led`, `<class_name>/ac`, and `<class_name>/projector`. Firmware
-ignores its own state payload shape to prevent a state publish from being
-processed again as a command.
+Actuator state and commands no longer share the same literal topic. Master
+publishes confirmed state to `<class_name>/data/...` and listens for commands on
+`<class_name>/control/...`.
 
 Firmware V2.5 runtime publishes only the V2 per-topic model. The old combined
 JSON compatibility topic `binus/ayam` is cleared as a retained message on MQTT
 connect and is not published periodically.
+
+The deployment flow now allows a server to subscribe to MQTT, normalize/phrase
+the numeric payloads, and then serve Flutter. Because of that, the master keeps
+payloads numeric and small.
 
 ## Payload Format
 
@@ -41,17 +51,43 @@ Runtime payloads are intentionally small:
 
 | Topic example | Payload | Meaning |
 |---|---|---|
-| `HD01/suhu` | Integer | Average temperature in Celsius, rounded from valid temperature slots. `-1` means no valid temperature. |
-| `HD01/co2` | Integer | CO2 ppm. |
-| `HD01/lux` | Integer | Lux value. |
-| `HD01/human` | Integer | `1` means presence detected, `0` means no presence. |
-| `HD01/led` | Integer | `1` means any mapped LED/relay is ON, `0` means all mapped LED/relay outputs are OFF. |
-| `HD01/projector` | Integer | `1` means projector ON command/state, `0` means OFF command/state. |
-| `HD01/ac` | 8-digit integer string | AC command/state encoded as `PPTTFFSS`. Target temperature is clamped to `16..30` degrees Celsius. |
+| `HD01/data/temp` | Integer | Average temperature in Celsius, rounded from valid temperature slots. `-1` means no valid temperature. |
+| `HD01/data/co2` | Integer | CO2 ppm. |
+| `HD01/data/lux` | Integer | Lux value. |
+| `HD01/data/human` | Integer | `1` means presence detected, `0` means no presence. |
+| `HD01/data/led` | Integer | `1` means any mapped LED/relay is ON, `0` means all mapped LED/relay outputs are OFF. |
+| `HD01/data/projector` | Integer | `1` means projector ON command/state, `0` means OFF command/state. |
+| `HD01/data/ac` | 8-digit integer | AC command/state encoded as `PPTTFFSS`. Target temperature is clamped to `16..30` degrees Celsius. |
+| `HD01/data/alert` | Decimal integer bitmask | Error/alert flags agreed by master, server, and Flutter. |
+| `HD01/data/active` | Integer | Retained `1` when master is connected. MQTT LWT publishes retained `0` if it disconnects unexpectedly. |
 
-The firmware also accepts scalar command payloads on `HD01/led` and
-`HD01/projector`: `1`, `0`, `on`, `off`, `true`, or `false`. JSON command
-payloads are still accepted for compatibility.
+The firmware accepts scalar command payloads on `HD01/control/led` and
+`HD01/control/projector`: `1`, `0`, `on`, `off`, `true`, or `false`. New clients
+should send numeric payloads.
+
+### Alert Decimal Bitmask
+
+`HD01/data/alert` publishes one decimal integer. Each bit means:
+
+| Bit | Decimal | Meaning |
+|---:|---:|---|
+| 0 | 1 | Temperature error / no valid temperature. |
+| 1 | 2 | CO2 error / no valid CO2. |
+| 2 | 4 | Lux error / no valid Lux. |
+| 3 | 8 | Human/presence sensor error / no valid presence. |
+| 4 | 16 | LED/relay error. |
+| 5 | 32 | Projector error. |
+| 6 | 64 | AC error. |
+| 7 | 128 | Presence detected outside schedule. Reserved until schedule logic is implemented. |
+
+Example:
+
+```text
+131
+```
+
+Means `1 + 2 + 128`: temperature error, CO2 error, and presence outside
+schedule.
 
 ### AC 8-Digit Payload Draft
 
@@ -115,7 +151,8 @@ Swing enum:
 | `11..98` | Reserved |
 | `99` | No change / unsupported |
 
-Implementation note: master firmware now publishes and accepts `HD01/ac` in
+Implementation note: master firmware now publishes and accepts `HD01/data/ac`
+and `HD01/control/ac` in
 this `PPTTFFSS` format. Legacy AC JSON parsing remains as a transition fallback,
 but new clients should use the 8-digit payload.
 
@@ -137,8 +174,8 @@ firmware's PubSubClient connection.
 
 ## Compatibility Changes
 
-- Replaced the previous space-separated topic labels with slash-separated exact
-  runtime topics such as `HD01/suhu`.
+- Replaced the previous flat topic labels with data/control topics such as
+  `HD01/data/temp` and `HD01/control/ac`.
 - Added tracked EMQX defaults in `src/mqtt_defaults.h`.
 - Kept `src/mqtt_secrets.h` as an optional ignored local override.
 - Kept retained V2 state publishing.

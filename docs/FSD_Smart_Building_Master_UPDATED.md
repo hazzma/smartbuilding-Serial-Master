@@ -40,15 +40,22 @@ Firmware V2 updates the system contract around three simple ideas: saved-slave r
 
 What changed:
 - Startup SHALL check saved slave configuration first. If saved slave data exists, the master SHALL try to reconnect those slaves. If no saved slave data exists, the master SHALL do nothing until the user starts discovery.
-- MQTT publish SHALL be split per data type. Runtime topics such as `HD01/suhu`
-  and `HD01/co2` are generated from the editable class/room name.
-- MQTT subscribe SHALL use actuator command topics such as LED, AC, and projector.
+- MQTT publish SHALL be split per data type. Runtime topics such as
+  `HD01/data/temp` and `HD01/data/co2` are generated from the editable
+  class/room name.
+- MQTT subscribe SHALL use control topics such as `HD01/control/led`,
+  `HD01/control/ac`, `HD01/control/projector`, and `HD01/control/schedule`.
 - LED and projector payloads SHALL be integer scalars: `1` for ON and `0` for OFF.
 - Temperature payload SHALL be one integer average Celsius value. `-1` means no valid temperature slot.
 - AC payload SHALL use the 8-digit decimal format `PPTTFFSS` for power,
   target temperature, fan speed, and swing. AC target temperature is clamped to
   `16..30` degrees Celsius.
 - Simple/general sensor payloads SHALL use integer payloads unless their specific spec says otherwise.
+- Alert payload SHALL use a decimal integer bitmask on `HD01/data/alert`.
+- Active payload SHALL use retained `1` on `HD01/data/active`; MQTT LWT SHALL publish retained `0` on unexpected disconnect.
+- Server-side consumers MAY subscribe to MQTT, phrase/normalize the numeric
+  payloads, and provide that processed data to Flutter. Master payloads SHALL
+  stay numeric and lightweight.
 - After an actuator command is confirmed by the target slave, the master SHALL publish the latest state again so Flutter/dashboard clients stay synchronized.
 - Slave configuration SHALL follow the v2.1 Device Profile model. Master enforces profile policy; slave remains policy-blind.
 
@@ -118,8 +125,8 @@ Hardware:
 ```text
 MQTT Broker (EMQX)
        |
-       | Firmware V2 per-sensor publish topics
-       | examples: HD01/suhu / HD01/co2 / HD01/led
+       | Firmware V2.5 data publish topics
+       | examples: HD01/data/temp / HD01/data/co2 / HD01/data/led
        v
 MQTT Manager
        |
@@ -955,14 +962,16 @@ default after the user edits MQTT Setup.
 Firmware V2 primary MQTT model SHALL be topic-per-data-type, not one combined master state JSON as the primary app contract.
 
 What changed:
-- The master SHALL publish each sensor/control state type to its own configured topic.
-- Exact publish topics for class `HD01`: `HD01/suhu`, `HD01/co2`, `HD01/led`, and the other supported data-type suffixes.
-- Exact subscribe topics for class `HD01`: `HD01/led`, `HD01/ac`, `HD01/projector`.
+- The master SHALL publish each sensor/control state type to its own configured `data` topic.
+- Exact publish topics for class `HD01`: `HD01/data/temp`, `HD01/data/co2`, `HD01/data/lux`, `HD01/data/human`, `HD01/data/led`, `HD01/data/projector`, `HD01/data/ac`, `HD01/data/alert`, and `HD01/data/active`.
+- Exact subscribe topics for class `HD01`: `HD01/control/led`, `HD01/control/ac`, `HD01/control/projector`, and `HD01/control/schedule`.
 - Simple/general sensor payloads SHALL be integer values.
 - LED and projector payloads SHALL be integer scalars, `1` for ON and `0` for OFF.
 - Temperature payload SHALL be one integer average Celsius value. `-1` means unavailable/no valid slot.
 - AC payload SHALL use `PPTTFFSS` because it carries power, target temperature,
   fan speed, and swing in one compact value.
+- Alert payload SHALL use a decimal integer bitmask.
+- Active payload SHALL use retained integer state with MQTT LWT.
 - Commands received on actuator topics SHALL be forwarded to the target slave.
 - After the slave confirms the actuator state, the master SHALL publish the updated state topic again.
 
@@ -975,8 +984,8 @@ Implementation effect:
 - MQTT setup must support topic templates or per-topic configuration for the room/class.
 - MQTT manager must publish different payload types depending on the data type.
 - Command handling must distinguish requested state from confirmed state.
-- Firmware V2.5 uses the same literal actuator topic for state and command and
-  must keep its self-echo payload guards enabled.
+- Firmware V2.5 separates actuator state and command topics with `data` and
+  `control` path segments.
 - The old combined JSON state payload is Legacy / V1 history only. Firmware
   V2.5 SHALL NOT publish it periodically.
 
@@ -1039,8 +1048,8 @@ Rules:
 - Publish rate SHALL be editable from MQTT Setup as seconds, using a numeric keyboard/input field.
 - Firmware SHALL clamp publish rate to a safe range, recommended `1..3600` seconds, then convert to milliseconds internally for scheduling.
 - Firmware V2 SHALL store an editable class/room name and MAY derive topic labels from it.
-- If class/room name is `HD01`, generated runtime topics become `HD01/co2`, `HD01/suhu`, `HD01/led`, `HD01/ac`, and `HD01/projector`.
-- If class/room name changes to `LA2`, generated runtime topics become `LA2/co2`, `LA2/suhu`, `LA2/led`, `LA2/ac`, and `LA2/projector`.
+- If class/room name is `HD01`, generated runtime topics become `HD01/data/co2`, `HD01/data/temp`, `HD01/data/led`, `HD01/data/ac`, `HD01/data/projector`, and `HD01/control/ac`.
+- If class/room name changes to `LA2`, generated runtime topics become `LA2/data/co2`, `LA2/data/temp`, `LA2/data/led`, `LA2/data/ac`, `LA2/data/projector`, and `LA2/control/ac`.
 - Explicit per-topic overrides MAY exist later, but the first V2 behavior should keep the class-name-derived template as the simple default.
 - Legacy single `publish_topic` and `subscribe_topic` fields MAY be kept only for migration/diagnostic compatibility.
 
@@ -1106,18 +1115,20 @@ Class/room name SHALL drive the default MQTT topic labels. Device name SHALL be 
 ### 10.1.4 MQTT Publish Format - Firmware V2 Primary
 
 The master SHALL publish by data type using the exact runtime template
-`<class_name>/<data_type>`. The following table shows the resulting topics for
+`<class_name>/data/<data_type>`. The following table shows the resulting topics for
 class `HD01`.
 
 | Example publish/state topic label | Payload rule | Purpose |
 |---|---|---|
-| `HD01/suhu` | Integer | Average temperature in Celsius. `-1` means no valid temperature slot. |
-| `HD01/co2` | Integer | CO2 ppm value. |
-| `HD01/lux` | Integer | Lux value when available. |
-| `HD01/human` | Integer | Presence state such as `0` or `1`. |
-| `HD01/led` | Integer | `1` if LED is ON, `0` if LED is OFF. |
-| `HD01/projector` | Integer | `1` if projector is ON, `0` if projector is OFF. |
-| `HD01/ac` | 8-digit integer string | AC `PPTTFFSS`: power, target temperature, fan speed, and swing. Target temperature is clamped to `16..30` degrees Celsius. |
+| `HD01/data/temp` | Integer | Average temperature in Celsius. `-1` means no valid temperature slot. |
+| `HD01/data/co2` | Integer | CO2 ppm value. |
+| `HD01/data/lux` | Integer | Lux value when available. |
+| `HD01/data/human` | Integer | Presence state such as `0` or `1`. |
+| `HD01/data/led` | Integer | `1` if LED is ON, `0` if LED is OFF. |
+| `HD01/data/projector` | Integer | `1` if projector is ON, `0` if projector is OFF. |
+| `HD01/data/ac` | 8-digit integer | AC `PPTTFFSS`: power, target temperature, fan speed, and swing. Target temperature is clamped to `16..30` degrees Celsius. |
+| `HD01/data/alert` | Decimal integer bitmask | Error/alert flags. |
+| `HD01/data/active` | Integer | Retained online state: `1` online, MQTT LWT `0` offline. |
 
 What changed: this replaces the previous single combined state JSON as the primary MQTT requirement.
 
@@ -1125,9 +1136,9 @@ Why it changed: each app screen or dashboard widget can subscribe only to the da
 
 Implementation effect: firmware must publish simple sensors, temperature average, LED state, and projector state as integers; AC uses `PPTTFFSS` for multi-field control state.
 
-Direction rule: Firmware V2.5 uses the same literal actuator topic for state
-publish and command subscribe. Firmware SHALL ignore its own state payload
-shapes in the command handler to avoid self-echo loops.
+Direction rule: Firmware V2.5 publishes actuator state under `data` and
+subscribes to commands under `control`, so self-echo guards are no longer part
+of the normal topic flow.
 
 ### 10.1.4.1 Legacy / V1 Combined State JSON
 
@@ -1218,13 +1229,14 @@ Publish triggers:
 ### 10.1.5 MQTT Subscribe Command Format - Firmware V2 Primary
 
 The master SHALL subscribe to actuator command topics generated by the exact
-runtime template `<class_name>/<data_type>`.
+runtime template `<class_name>/control/<command_type>`.
 
 | Example subscribe/command topic label | Command payload rule | Behavior |
 |---|---|---|
-| `HD01/led` | Integer command | Forward LED command to target slave, wait for confirmation, publish LED integer state. |
-| `HD01/ac` | `PPTTFFSS` command | Forward AC command to target slave, wait for confirmation, publish latest AC state. |
-| `HD01/projector` | Integer command | Forward projector command to target slave, wait for confirmation, publish latest projector integer state. |
+| `HD01/control/led` | Integer command | Forward LED command to target slave, wait for confirmation, publish LED integer state. |
+| `HD01/control/ac` | `PPTTFFSS` command | Forward AC command to target slave, wait for confirmation, publish latest AC state. |
+| `HD01/control/projector` | Integer command | Forward projector command to target slave, wait for confirmation, publish latest projector integer state. |
+| `HD01/control/schedule` | Reserved integer/structured command | Future schedule configuration/control input. |
 
 What changed: command handling is topic-based and confirmation-based.
 
@@ -1323,11 +1335,12 @@ Info screen SHALL include:
 
 Class topic effect:
 - Editing class/room name SHALL update the default MQTT topic labels derived from that class name.
-- Example: class `HD01` derives labels such as `HD01/co2`, `HD01/suhu`, `HD01/led`.
-- Example: class `LA2` derives labels such as `LA2/co2`, `LA2/suhu`, `LA2/led`.
-- Firmware V2.5 generates the exact runtime topic from
-  `<class_name>/<data_type>`. Actuator state and commands currently share the
-  same topic with self-echo guards.
+- Example: class `HD01` derives labels such as `HD01/data/co2`, `HD01/data/temp`,
+  `HD01/data/led`, and `HD01/control/led`.
+- Example: class `LA2` derives labels such as `LA2/data/co2`, `LA2/data/temp`,
+  `LA2/data/led`, and `LA2/control/led`.
+- Firmware V2.5 generates exact runtime topics from
+  `<class_name>/data/<data_type>` and `<class_name>/control/<command_type>`.
 
 ---
 
@@ -1956,7 +1969,7 @@ System-level requirements:
 - Slave Manager SHALL remain the entry point for discovery, pairing, polling,
   device list, and device detail navigation.
 - Settings Page 2 SHALL open dedicated MQTT Setup and Device Info screens. MQTT connection fields and device identity fields SHALL be saved dynamically to NVS/Preferences.
-- Editing class/room name in Settings Page 2 SHALL update default MQTT topic labels generated by the class template, for example `HD01/co2` or `LA2/co2`.
+- Editing class/room name in Settings Page 2 SHALL update default MQTT topic labels generated by the class template, for example `HD01/data/co2`, `HD01/control/led`, `LA2/data/co2`, or `LA2/control/led`.
 
 Detailed visual layout for these surfaces SHOULD be kept in `docs/UIUX.md` or the connectivity mapping design document where applicable; this FSD SHALL avoid duplicating full screen mockups unless required for system behavior.
 
