@@ -195,6 +195,102 @@ void Task_Net(void* pvParameters) {
         mqtt_loop();
         time_manager_update();
 
+        // 1-second logic check for Light Active Time accumulation, Midnight Rollover, and Scheduler countdowns
+        static uint32_t last_sec_check = 0;
+        if (now - last_sec_check >= 1000) {
+            last_sec_check = now;
+
+            bool save_needed = false;
+            bool trigger_rs485_ac_off = false;
+            bool trigger_rs485_light_off = false;
+            float target_temp = 23.0f;
+            uint8_t fan_speed = 0;
+            uint8_t swing_mode = 0;
+
+            data_lock(g_state);
+
+            // Accumulate light active duration
+            if (g_state.sensor.light_on) {
+                g_state.sensor.light_accum_sec_today++;
+            }
+
+            // Scheduler Shutdown Countdown
+            if (g_state.sensor.sched_shutdown_active && millis() >= g_state.sensor.sched_shutdown_timer_ms) {
+                if (!g_state.sensor.human_presence) {
+                    g_state.sensor.ac_on = false;
+                    g_state.sensor.light_on = false;
+                    g_state.sensor.sched_shutdown_active = false;
+                    g_state.sensor.sched_shutdown_timer_ms = 0;
+                    g_state.ui_needs_update = true;
+
+                    trigger_rs485_ac_off = true;
+                    trigger_rs485_light_off = true;
+                    target_temp = g_state.sensor.temp_target;
+                    fan_speed = g_state.sensor.ac_fan_speed;
+                    swing_mode = g_state.sensor.ac_swing_mode;
+                }
+            }
+
+            // NTP time checks & Midnight Rollover
+            struct tm timeinfo;
+            if (getLocalTime(&timeinfo, 5)) {
+                // Dynamic Anomaly Detection (if we have >=7 days history)
+                if (g_state.sensor.light_day_count >= 7) {
+                    uint32_t sum_min = 0;
+                    for (int i = 0; i < 7; i++) {
+                        sum_min += g_state.sensor.light_history_min[i];
+                    }
+                    float avg_min = (float)sum_min / 7.0f;
+                    float today_min = g_state.sensor.light_accum_sec_today / 60.0f;
+                    bool after_hours = (timeinfo.tm_hour >= 22 || timeinfo.tm_hour < 6);
+
+                    bool old_alert = g_state.sensor.light_anomaly_alert;
+                    g_state.sensor.light_anomaly_alert = (today_min > 1.5f * avg_min) && after_hours && !g_state.sensor.human_presence;
+                    if (old_alert != g_state.sensor.light_anomaly_alert) {
+                        g_state.ui_needs_update = true;
+                        save_needed = true;
+                    }
+                } else {
+                    g_state.sensor.light_anomaly_alert = false;
+                }
+
+                // Midnight Rollover checking
+                static int last_day = -1;
+                if (last_day == -1) {
+                    last_day = timeinfo.tm_mday;
+                } else if (timeinfo.tm_mday != last_day) {
+                    last_day = timeinfo.tm_mday;
+
+                    uint16_t light_min = g_state.sensor.light_accum_sec_today / 60;
+                    uint32_t current_day = g_state.sensor.light_day_count;
+                    g_state.sensor.light_history_min[current_day % 7] = light_min;
+                    g_state.sensor.light_day_count++;
+                    g_state.sensor.light_accum_sec_today = 0;
+                    g_state.ui_needs_update = true;
+                    save_needed = true;
+
+                    Serial.printf("[Rollover] Midnight transition. Saved light active: %u min. Total days: %u\n", 
+                                  light_min, (unsigned)g_state.sensor.light_day_count);
+                }
+            }
+
+            data_unlock(g_state);
+
+            // Trigger commands outside lock
+            if (trigger_rs485_ac_off) {
+                rs485_request_ac_command(false, target_temp, 0, fan_speed, swing_mode);
+            }
+            if (trigger_rs485_light_off) {
+                rs485_request_light_command(false);
+            }
+            if (trigger_rs485_ac_off || trigger_rs485_light_off || save_needed) {
+                if (save_needed) {
+                    data_save_device_config(g_state);
+                }
+                mqtt_publish_state();
+            }
+        }
+
         static uint32_t last_hb = 0;
         if (now - last_hb > 5000) {
             last_hb = now;

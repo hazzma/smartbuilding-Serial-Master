@@ -1735,6 +1735,26 @@ void rs485_request_projector_command(bool power, uint8_t input) {
     g_state.rs485.projector_command_requested = true;
     g_state.rs485.projector_command_power = power;
     g_state.rs485.projector_command_input = input;
+
+    if (power) {
+        g_state.sensor.projector_on = true;
+        if (g_state.sensor.lux < 0.0f) {
+            g_state.sensor.proj_verif_state = 2; // ON
+            g_state.sensor.proj_hardware_failed = false;
+        } else {
+            g_state.sensor.proj_verif_state = 1; // POWERING_ON
+            g_state.sensor.proj_lux_initial = g_state.sensor.lux;
+            g_state.sensor.proj_warmup_timer_ms = millis() + 8000;
+            g_state.sensor.proj_retry_count = 0;
+            g_state.sensor.proj_hardware_failed = false;
+        }
+    } else {
+        g_state.sensor.projector_on = false;
+        g_state.sensor.proj_verif_state = 0; // OFF
+        g_state.sensor.proj_hardware_failed = false;
+        g_state.sensor.proj_retry_count = 0;
+    }
+
     strncpy(g_state.rs485.status, "Queued projector command", sizeof(g_state.rs485.status) - 1);
     g_state.rs485.status[sizeof(g_state.rs485.status) - 1] = '\0';
     g_state.ui_needs_update = true;
@@ -2388,6 +2408,68 @@ static void rs485_handle_control_commands() {
     }
 }
 
+static void rs485_handle_projector_verification() {
+    data_lock(g_state);
+    if (g_state.sensor.proj_verif_state == 1 || g_state.sensor.proj_verif_state == 3) {
+        if (g_state.sensor.lux < 0.0f) {
+            g_state.sensor.proj_verif_state = 2; // ON
+            g_state.sensor.proj_hardware_failed = false;
+            g_state.ui_needs_update = true;
+            data_unlock(g_state);
+            return;
+        }
+
+        float current_lux = g_state.sensor.lux;
+        float delta_lux = current_lux - g_state.sensor.proj_lux_initial;
+
+        if (delta_lux >= 50.0f) {
+            g_state.sensor.proj_verif_state = 2; // ON
+            g_state.sensor.proj_hardware_failed = false;
+            g_state.ui_needs_update = true;
+            Serial.printf("[Projector] Verified ON early. Lux delta: %.1f\n", delta_lux);
+            data_unlock(g_state);
+            return;
+        }
+
+        if (millis() >= g_state.sensor.proj_warmup_timer_ms) {
+            Serial.printf("[Projector] Timer expired. Lux initial: %.1f, current: %.1f, delta: %.1f\n", 
+                          g_state.sensor.proj_lux_initial, current_lux, delta_lux);
+            
+            if (delta_lux >= 50.0f) {
+                g_state.sensor.proj_verif_state = 2; // ON
+                g_state.sensor.proj_hardware_failed = false;
+                g_state.ui_needs_update = true;
+            } else {
+                if (g_state.sensor.proj_verif_state == 1) {
+                    g_state.sensor.proj_verif_state = 3; // RETRYING
+                    g_state.sensor.proj_lux_initial = current_lux;
+                    g_state.sensor.proj_warmup_timer_ms = millis() + 8000;
+                    g_state.sensor.proj_retry_count = 1;
+                    g_state.ui_needs_update = true;
+                    
+                    g_state.rs485.projector_command_requested = true;
+                    g_state.rs485.projector_command_power = true;
+                    g_state.rs485.projector_command_input = 0;
+                    
+                    Serial.println("[Projector] First verification failed. Retrying...");
+                } else {
+                    g_state.sensor.proj_verif_state = 0; // OFF
+                    g_state.sensor.proj_hardware_failed = true;
+                    g_state.sensor.projector_on = false;
+                    g_state.ui_needs_update = true;
+                    
+                    g_state.rs485.projector_command_requested = true;
+                    g_state.rs485.projector_command_power = false;
+                    g_state.rs485.projector_command_input = 0;
+                    
+                    Serial.println("[Projector] Second verification failed. Declaring HW FAIL.");
+                }
+            }
+        }
+    }
+    data_unlock(g_state);
+}
+
 void rs485_manager_init() {
     pinMode(RS485_DIR_PIN, OUTPUT);
     digitalWrite(RS485_DIR_PIN, LOW);
@@ -2417,6 +2499,7 @@ void rs485_manager_loop() {
     rs485_handle_pairing_scan();
     rs485_handle_pairing_timeout();
     rs485_handle_ui_test_request();
+    rs485_handle_projector_verification();
     rs485_handle_control_commands();
 
     uint32_t now = millis();

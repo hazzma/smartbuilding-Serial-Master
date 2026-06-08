@@ -85,6 +85,21 @@ void data_load_dummy(BuildingState& state) {
         state.sensor.slave_online[0] = true;
         state.sensor.slave_online[1] = true;
 
+        state.sensor.proj_verif_state = 0;
+        state.sensor.proj_lux_initial = -1.0f;
+        state.sensor.proj_warmup_timer_ms = 0;
+        state.sensor.proj_retry_count = 0;
+        state.sensor.proj_hardware_failed = false;
+
+        state.sensor.sched_shutdown_active = false;
+        state.sensor.sched_shutdown_timer_ms = 0;
+
+        state.sensor.light_on_start_ms = 0;
+        state.sensor.light_accum_sec_today = 0;
+        memset(state.sensor.light_history_min, 0, sizeof(state.sensor.light_history_min));
+        state.sensor.light_day_count = 0;
+        state.sensor.light_anomaly_alert = false;
+
         state.net.wifi_connected = true;
         state.net.lan_connected  = false;
         state.net.lan_initialized = false;
@@ -260,6 +275,16 @@ void data_load_device_config(BuildingState& state) {
     if (state.net.mqtt_port == 0) {
         state.net.mqtt_port = state.net.mqtt_use_tls ? MQTT_PORT_SECURE_DEFAULT : MQTT_PORT_NORMAL_DEFAULT;
     }
+
+    state.sensor.light_day_count = prefs.getUInt("l_day_cnt", 0);
+    state.sensor.light_accum_sec_today = prefs.getUInt("l_acc_sec", 0);
+    state.sensor.light_anomaly_alert = prefs.getBool("l_anom_alrt", false);
+    for (int i = 0; i < 7; i++) {
+        char key[16];
+        snprintf(key, sizeof(key), "l_hist_%d", i);
+        state.sensor.light_history_min[i] = prefs.getUShort(key, 0);
+    }
+
     state.ui_needs_update = true;
     data_unlock(state);
 
@@ -278,6 +303,16 @@ void data_save_device_config(BuildingState& state) {
     prefs.putBool("mqtt_tls", state.net.mqtt_use_tls);
     prefs.putString("mqtt_user", state.net.mqtt_user);
     prefs.putString("mqtt_pass", state.net.mqtt_pass);
+
+    prefs.putUInt("l_day_cnt", state.sensor.light_day_count);
+    prefs.putUInt("l_acc_sec", state.sensor.light_accum_sec_today);
+    prefs.putBool("l_anom_alrt", state.sensor.light_anomaly_alert);
+    for (int i = 0; i < 7; i++) {
+        char key[16];
+        snprintf(key, sizeof(key), "l_hist_%d", i);
+        prefs.putUShort(key, state.sensor.light_history_min[i]);
+    }
+
     data_unlock(state);
 
     prefs.end();

@@ -474,8 +474,9 @@ static void mqtt_publish_v2_state() {
     if (!g_state.rs485.dashboard.lux_valid) alert_mask |= (1 << 2);
     if (!g_state.rs485.dashboard.human_presence_valid) alert_mask |= (1 << 3);
     if (!g_state.rs485.bus_ok && light_id > 1) alert_mask |= (1 << 4);
-    if (!g_state.rs485.bus_ok && g_state.rs485.dashboard.projector_available) alert_mask |= (1 << 5);
+    if (g_state.sensor.proj_hardware_failed || (!g_state.rs485.bus_ok && g_state.rs485.dashboard.projector_available)) alert_mask |= (1 << 5);
     if (!g_state.rs485.bus_ok && g_state.rs485.dashboard.ac_available) alert_mask |= (1 << 6);
+    if (g_state.sensor.light_anomaly_alert) alert_mask |= (1 << 7);
     snprintf(alert_payload, sizeof(alert_payload), "%u", alert_mask);
 
     data_unlock(g_state);
@@ -491,7 +492,7 @@ static void mqtt_publish_v2_state() {
     mqtt_publish_raw(topic_active, "1", true, "active");
 }
 
-static void mqtt_publish_state() {
+void mqtt_publish_state() {
     mqtt_publish_v2_state();
 }
 
@@ -499,13 +500,23 @@ static void mqtt_callback(char* topic, byte* payload, unsigned int length) {
     char topic_led[48];
     char topic_ac[48];
     char topic_projector[48];
+    char topic_schedule[48];
+    bool presence = false;
+
     data_lock(g_state);
     mqtt_build_control_topic_locked(MQTT_TOPIC_LED, topic_led, sizeof(topic_led));
     mqtt_build_control_topic_locked(MQTT_TOPIC_AC, topic_ac, sizeof(topic_ac));
     mqtt_build_control_topic_locked(MQTT_TOPIC_PROJECTOR, topic_projector, sizeof(topic_projector));
+    mqtt_build_control_topic_locked(MQTT_TOPIC_SCHEDULE, topic_schedule, sizeof(topic_schedule));
+    presence = g_state.sensor.human_presence;
     data_unlock(g_state);
 
     if (strcmp(topic, topic_led) == 0) {
+        if (presence) {
+            Serial.println("[MQTT] LED command ignored due to active human presence");
+            return;
+        }
+
         bool scalar_on = false;
         if (mqtt_parse_bool_payload(payload, length, scalar_on)) {
             data_lock(g_state);
@@ -567,6 +578,10 @@ static void mqtt_callback(char* topic, byte* payload, unsigned int length) {
         uint8_t desired_swing = 0;
         if (mqtt_parse_ac_payload(payload, length, desired_power, desired_target, desired_fan, desired_swing)) {
             data_lock(g_state);
+            if (presence && !desired_power) {
+                desired_power = true;
+                Serial.println("[MQTT] AC OFF command ignored due to active human presence");
+            }
             g_state.sensor.ac_on = desired_power;
             g_state.sensor.temp_target = desired_target;
             g_state.sensor.ac_fan_speed = desired_fan;
@@ -589,11 +604,17 @@ static void mqtt_callback(char* topic, byte* payload, unsigned int length) {
 
         data_lock(g_state);
         if (!doc["power"].isNull()) {
+            bool new_power = false;
             if (doc["power"].is<const char*>()) {
                 const char* power = doc["power"] | "";
-                g_state.sensor.ac_on = strcmp(power, "ON") == 0 || strcmp(power, "on") == 0;
+                new_power = strcmp(power, "ON") == 0 || strcmp(power, "on") == 0;
             } else {
-                g_state.sensor.ac_on = doc["power"].as<bool>();
+                new_power = doc["power"].as<bool>();
+            }
+            if (presence && !new_power) {
+                Serial.println("[MQTT] AC OFF JSON command ignored due to active human presence");
+            } else {
+                g_state.sensor.ac_on = new_power;
             }
         }
         if (!doc["target_c"].isNull()) {
@@ -657,6 +678,36 @@ static void mqtt_callback(char* topic, byte* payload, unsigned int length) {
         return;
     }
 
+    if (strcmp(topic, topic_schedule) == 0) {
+        char payload_str[32] = {0};
+        size_t len = (length < sizeof(payload_str) - 1) ? length : (sizeof(payload_str) - 1);
+        memcpy(payload_str, payload, len);
+
+        if (strcmp(payload_str, "PRE_CLASS_ON") == 0) {
+            Serial.println("[MQTT] Schedule: PRE_CLASS_ON command received");
+            data_lock(g_state);
+            g_state.sensor.ac_on = true;
+            g_state.sensor.light_on = true;
+            g_state.sensor.sched_shutdown_active = false;
+            g_state.sensor.sched_shutdown_timer_ms = 0;
+            g_state.ui_needs_update = true;
+            data_unlock(g_state);
+
+            rs485_request_ac_command(true, g_state.sensor.temp_target, 0, g_state.sensor.ac_fan_speed, g_state.sensor.ac_swing_mode);
+            rs485_request_light_command(true);
+            mqtt_publish_state();
+        } else if (strcmp(payload_str, "CLASS_ENDED") == 0) {
+            Serial.println("[MQTT] Schedule: CLASS_ENDED command received");
+            data_lock(g_state);
+            g_state.sensor.sched_shutdown_active = true;
+            g_state.sensor.sched_shutdown_timer_ms = millis() + (20 * 60 * 1000);
+            g_state.ui_needs_update = true;
+            data_unlock(g_state);
+            mqtt_publish_state();
+        }
+        return;
+    }
+
     if (strcmp(topic, mqtt_topic_sub) == 0) {
         JsonDocument doc;
         DeserializationError error = deserializeJson(doc, payload, length);
@@ -687,8 +738,13 @@ static void mqtt_callback(char* topic, byte* payload, unsigned int length) {
                 projector_power = g_state.sensor.projector_on;
             }
             if (!controls["ac"]["power"].isNull()) {
-                g_state.sensor.ac_on = controls["ac"]["power"].as<bool>();
-                ac_changed = true;
+                bool new_ac_power = controls["ac"]["power"].as<bool>();
+                if (presence && !new_ac_power) {
+                    Serial.println("[MQTT] Master AC power OFF command ignored due to active human presence");
+                } else {
+                    g_state.sensor.ac_on = new_ac_power;
+                    ac_changed = true;
+                }
             }
             if (!controls["ac"]["target_c"].isNull()) {
                 g_state.sensor.temp_target = mqtt_clamp_ac_target(controls["ac"]["target_c"].as<float>());
@@ -709,9 +765,13 @@ static void mqtt_callback(char* topic, byte* payload, unsigned int length) {
             if (controls["lights"].is<JsonArray>()) {
                 for (JsonObject light : controls["lights"].as<JsonArray>()) {
                     if (!light["power"].isNull()) {
-                        g_state.sensor.light_on = light["power"].as<bool>();
-                        light_changed = true;
-                        light_power = g_state.sensor.light_on;
+                        if (presence) {
+                            Serial.println("[MQTT] Master light power command ignored due to active human presence");
+                        } else {
+                            g_state.sensor.light_on = light["power"].as<bool>();
+                            light_changed = true;
+                            light_power = g_state.sensor.light_on;
+                        }
                     }
                 }
             }
@@ -719,14 +779,6 @@ static void mqtt_callback(char* topic, byte* payload, unsigned int length) {
             data_unlock(g_state);
             if (projector_changed) rs485_request_projector_command(projector_power);
             if (ac_changed) rs485_request_ac_command(ac_power, ac_target, 0, ac_fan, ac_swing);
-            if (light_changed) rs485_request_light_command(light_power);
-            Serial.println("[MQTT] Command applied");
-            mqtt_publish_state();
-            return;
-        }
-
-        if (doc["temperature"].isNull() && doc["lux"].isNull() && doc["co2"].isNull()) {
-            return;
         }
 
         float temp = doc["temperature"].isNull() ? -100.0f : doc["temperature"].as<float>();

@@ -335,9 +335,18 @@ void drawAcTargetWidget(int x, int y, int w, int h, float target_temp, bool ac_o
     p_engine->setTextDatum(TextDatum::TopLeft);
 }
 
-void drawLargeControlButton(int x, int y, int w, int h, const char* label, bool on) {
+void drawLargeControlButton(int x, int y, int w, int h, const char* label, bool on, const char* subtext) {
     uint16_t border = on ? COLOR_STAT_ON : COLOR_STAT_OFF;
     uint16_t fill = on ? p_engine->color565(10, 48, 34) : COLOR_CARD_BG;
+
+    if (subtext && strcmp(subtext, "POWERING") == 0) {
+        border = p_engine->color565(255, 165, 0); // Orange
+        fill = p_engine->color565(48, 34, 10);     // Orange-ish fill
+    } else if (subtext && strcmp(subtext, "FAIL") == 0) {
+        border = COLOR_STAT_ERR; // Red
+        fill = p_engine->color565(48, 10, 10);     // Red-ish fill
+    }
+
     drawCardBase(x, y, w, h, fill);
     p_engine->drawRoundRect(x, y, w, h, CARD_RAD, border);
 
@@ -346,8 +355,22 @@ void drawLargeControlButton(int x, int y, int w, int h, const char* label, bool 
     p_engine->setTextColor(COLOR_TEXT_MAIN);
     p_engine->drawString(label, x + w / 2, y + h / 2 - 12);
     p_engine->setTextFont(2);
-    p_engine->setTextColor(on ? COLOR_STAT_ON : COLOR_TEXT_SEC);
-    p_engine->drawString(on ? "ON" : "OFF", x + w / 2, y + h / 2 + 22);
+    
+    if (subtext) {
+        if (strcmp(subtext, "POWERING") == 0) {
+            p_engine->setTextColor(p_engine->color565(255, 165, 0));
+            p_engine->drawString("POWERING", x + w / 2, y + h / 2 + 22);
+        } else if (strcmp(subtext, "FAIL") == 0) {
+            p_engine->setTextColor(COLOR_STAT_ERR);
+            p_engine->drawString("HW FAIL", x + w / 2, y + h / 2 + 22);
+        } else {
+            p_engine->setTextColor(on ? COLOR_STAT_ON : COLOR_TEXT_SEC);
+            p_engine->drawString(subtext, x + w / 2, y + h / 2 + 22);
+        }
+    } else {
+        p_engine->setTextColor(on ? COLOR_STAT_ON : COLOR_TEXT_SEC);
+        p_engine->drawString(on ? "ON" : "OFF", x + w / 2, y + h / 2 + 22);
+    }
     p_engine->setTextDatum(TextDatum::TopLeft);
 }
 

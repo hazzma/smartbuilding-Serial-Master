@@ -38,6 +38,13 @@ Implementation effect:
 
 ## Patch Notes
 
+### V2.7
+
+- **Projector Verification**: Implemented projector verification using BH1750 ambient light delta ($\Delta L \ge 50\text{ lx}$) over 8 seconds. Optimistically publishes `"1"` (ON) to MQTT when powering, retries once on failure, then falls back to OFF and publishes `"0"` with Alert Bit 5 (32) raised. If no valid Lux sensor is available ($<0.0\text{ lx}$), it skips the check and transitions directly to ON.
+- **Occupancy Safety Overrides (Acceptation Level)**: Restricts remote MQTT commands when human presence is detected (`human_presence == true`). Ignores remote light ON/OFF commands and remote AC OFF commands to prevent remote scripts from disrupting active classes. Remote AC temperature adjustments, fan speed, swing mode, and local HMI touchscreen controls always bypass this constraint.
+- **Scheduler & Smart Shutdown**: Subscribes to and parses `"PRE_CLASS_ON"` (turns ON AC and lights immediately, clearing pending shutdown timers) and `"CLASS_ENDED"` (starts 20-minute empty room shutdown timer) on `control/schedule`. When the timer expires, turns off lights and AC only if the room is empty (`human_presence == false`).
+- **7-Day Rolling Lamp Anomaly Alerting**: Logs daily active lamp minutes. Rollover occurs at midnight via NTP time and persists to NVS circular buffer `light_history_min[day_count % 7]`. Triggers Alert Bit 7 (128) if today's duration exceeds the 7-day average by $1.5\times$ during after-hours (22:00-06:00) when the room is empty (`human_presence == false`).
+
 ### V2.6.1
 
 - Updates MQTT topic structure and payload formatting.

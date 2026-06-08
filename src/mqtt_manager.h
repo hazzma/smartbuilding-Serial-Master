@@ -7,5 +7,6 @@ void mqtt_init();
 void mqtt_loop();
 bool is_mqtt_connected();
 void mqtt_request_reconnect();
+void mqtt_publish_state();
 
 #endif

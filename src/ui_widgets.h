@@ -32,7 +32,7 @@ void drawDashboardTopBar(const char* time_str, bool wifi, bool lan, bool bus_ok,
 void drawCO2Chip(int x, int y, int co2);
 void drawLargeTempWidget(int x, int y, int w, int h, float temp, bool valid, bool large);
 void drawAcTargetWidget(int x, int y, int w, int h, float target_temp, bool ac_on);
-void drawLargeControlButton(int x, int y, int w, int h, const char* label, bool on);
+void drawLargeControlButton(int x, int y, int w, int h, const char* label, bool on, const char* subtext = nullptr);
 void drawDashboardEmptyState(const char* title, const char* subtitle);
 void drawDashboardEmptyHero(const char* time_str, const char* title, const char* subtitle);
 

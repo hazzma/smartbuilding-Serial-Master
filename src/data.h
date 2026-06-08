@@ -72,6 +72,10 @@ struct DashboardModel {
     bool  human_presence_valid;
     bool  ac_available;
     bool  projector_available;
+    bool  projector_on;
+    uint8_t proj_verif_state;
+    bool  proj_hw_fail;
+    bool  led_on;
 };
 
 struct WiFiScanResult {
@@ -192,6 +196,24 @@ struct SensorData {
     bool     sensor_error[4];
     uint8_t  slave_count;
     bool     slave_online[2];
+
+    // Projector Lux Verification fields
+    uint8_t  proj_verif_state;       // 0=OFF, 1=POWERING_ON, 2=ON, 3=RETRYING
+    float    proj_lux_initial;
+    uint32_t proj_warmup_timer_ms;
+    uint8_t  proj_retry_count;
+    bool     proj_hardware_failed;
+
+    // Scheduler fields
+    bool     sched_shutdown_active;
+    uint32_t sched_shutdown_timer_ms;
+
+    // Rolling light history fields
+    uint32_t light_on_start_ms;
+    uint32_t light_accum_sec_today;
+    uint16_t light_history_min[7];
+    uint32_t light_day_count;
+    bool     light_anomaly_alert;
 };
 
 struct NetworkState {

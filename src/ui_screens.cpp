@@ -223,6 +223,8 @@ struct DashboardUiModel {
     bool led_on;
     bool ac_mirrors;
     DashboardLayoutMode layout;
+    uint8_t proj_verif_state;
+    bool proj_hw_fail;
 };
 
 static bool rs485_has_online_slave(const RS485State& rs485) {
@@ -284,6 +286,8 @@ static DashboardUiModel dashboard_make_ui_model(const BuildingState& state) {
     model.ac_mirrors = rs485_has_ir_combo_node(state.rs485);
     model.layout = dashboard_choose_layout(model.has_temp, model.has_ac,
                                            model.has_projector, model.has_led);
+    model.proj_verif_state = state.sensor.proj_verif_state;
+    model.proj_hw_fail = state.sensor.proj_hardware_failed;
     return model;
 }
 
@@ -473,6 +477,13 @@ void render_dashboard(BuildingState& state, int fps) {
         drawCO2Chip(198, 10, model.co2);
     }
 
+    const char* proj_sub = nullptr;
+    if (model.proj_hw_fail) {
+        proj_sub = "FAIL";
+    } else if (model.proj_verif_state == 1 || model.proj_verif_state == 3) {
+        proj_sub = "POWERING";
+    }
+
     switch (model.layout) {
         case DASH_LAYOUT_TEMP_CENTER_LARGE:
             drawLargeTempWidget(40, 78, 400, 174, model.avg_temp, true, true);
@@ -484,7 +495,7 @@ void render_dashboard(BuildingState& state, int fps) {
                 dashboard_draw_ac_widget(252, 104, 204, 124, model);
             } else if (model.has_ac && model.has_projector && !model.has_led) {
                 dashboard_draw_ac_widget(18, 64, 216, 234, model);
-                drawLargeControlButton(306, 64, 136, 136, "Projector", model.projector_on);
+                drawLargeControlButton(306, 64, 136, 136, "Projector", model.projector_on, proj_sub);
                 drawLargeTempWidget(252, 214, 216, 84, model.avg_temp, true, false);
             } else {
                 if (model.has_ac) {
@@ -495,10 +506,10 @@ void render_dashboard(BuildingState& state, int fps) {
                 }
 
                 if (model.has_projector && model.has_led) {
-                    drawLargeControlButton(24, 190, 204, 104, "Projector", model.projector_on);
+                    drawLargeControlButton(24, 190, 204, 104, "Projector", model.projector_on, proj_sub);
                     drawLargeControlButton(252, 190, 204, 104, "LED", model.led_on);
                 } else if (model.has_projector) {
-                    drawLargeControlButton(88, 190, 304, 104, "Projector", model.projector_on);
+                    drawLargeControlButton(88, 190, 304, 104, "Projector", model.projector_on, proj_sub);
                 } else if (model.has_led) {
                     drawLargeControlButton(88, 190, 304, 104, "LED", model.led_on);
                 }
@@ -518,7 +529,7 @@ void render_dashboard(BuildingState& state, int fps) {
             if (model.has_ac) {
                 dashboard_draw_ac_widget(98, 88, 284, 150, model);
             } else if (model.has_projector) {
-                drawLargeControlButton(72, 92, 336, 144, "Projector", model.projector_on);
+                drawLargeControlButton(72, 92, 336, 144, "Projector", model.projector_on, proj_sub);
             } else if (model.has_led) {
                 drawLargeControlButton(72, 92, 336, 144, "LED", model.led_on);
             }
@@ -527,17 +538,17 @@ void render_dashboard(BuildingState& state, int fps) {
         case DASH_LAYOUT_MULTI_CONTROL_SPLIT:
             if (model.has_ac && model.has_projector && !model.has_led) {
                 dashboard_draw_ac_widget(18, 62, 224, 236, model);
-                drawLargeControlButton(258, 75, 210, 210, "Projector", model.projector_on);
+                drawLargeControlButton(258, 75, 210, 210, "Projector", model.projector_on, proj_sub);
             } else if (model.has_ac) {
                 dashboard_draw_ac_widget(24, 76, 206, 142, model);
                 if (model.has_projector) {
-                    drawLargeControlButton(250, 76, 206, 74, "Projector", model.projector_on);
+                    drawLargeControlButton(250, 76, 206, 74, "Projector", model.projector_on, proj_sub);
                 }
                 if (model.has_led) {
                     drawLargeControlButton(250, 158, 206, 74, "LED", model.led_on);
                 }
             } else {
-                drawLargeControlButton(24, 92, 204, 144, "Projector", model.projector_on);
+                drawLargeControlButton(24, 92, 204, 144, "Projector", model.projector_on, proj_sub);
                 drawLargeControlButton(252, 92, 204, 144, "LED", model.led_on);
             }
             break;
