@@ -976,7 +976,11 @@ static bool rs485_write_light_command(bool on) {
     return ok;
 }
 
-static bool rs485_write_ac_command(bool power, float target_c, uint8_t mode) {
+static uint8_t rs485_normalize_ac_enum(uint8_t value) {
+    return value <= 99 ? value : 99;
+}
+
+static bool rs485_write_ac_command(bool power, float target_c, uint8_t mode, uint8_t fan_speed, uint8_t swing_mode) {
     RS485SlaveState slave = {};
     if (!rs485_find_control_slave(RS485_CAP_AC_IR, LOGICAL_AC_CONTROL, slave)) {
         data_lock(g_state);
@@ -990,6 +994,8 @@ static bool rs485_write_ac_command(bool power, float target_c, uint8_t mode) {
     if (target_c < 16.0f) target_c = 16.0f;
     if (target_c > 30.0f) target_c = 30.0f;
     uint16_t temp = (uint16_t)(target_c + 0.5f) * 10;
+    fan_speed = rs485_normalize_ac_enum(fan_speed);
+    swing_mode = rs485_normalize_ac_enum(swing_mode);
 
     bool ok = rs485_write_holding_register(slave.address, RS485_MODBUS_REG_AC_1_POWER,
                                            power ? 1 : 0, "AC1_POWER");
@@ -997,6 +1003,12 @@ static bool rs485_write_ac_command(bool power, float target_c, uint8_t mode) {
                                       temp, "AC1_TEMP") && ok;
     ok = rs485_write_holding_register(slave.address, RS485_MODBUS_REG_AC_1_MODE,
                                       mode, "AC1_MODE") && ok;
+    ok = rs485_write_holding_register(slave.address, RS485_MODBUS_REG_AC_1_FAN_SPEED,
+                                      fan_speed, "AC1_FAN") && ok;
+    ok = rs485_write_holding_register(slave.address, RS485_MODBUS_REG_AC_1_SWING_VERTICAL,
+                                      swing_mode, "AC1_SWING_V") && ok;
+    ok = rs485_write_holding_register(slave.address, RS485_MODBUS_REG_AC_1_SWING_HORIZONTAL,
+                                      99, "AC1_SWING_H") && ok;
 
     bool mirror_ac2 = slave.profile == IR_COMBO_NODE || slave.ir_count > 2;
     if (mirror_ac2) {
@@ -1006,6 +1018,12 @@ static bool rs485_write_ac_command(bool power, float target_c, uint8_t mode) {
                                           temp, "AC2_TEMP") && ok;
         ok = rs485_write_holding_register(slave.address, RS485_MODBUS_REG_AC_2_MODE,
                                           mode, "AC2_MODE") && ok;
+        ok = rs485_write_holding_register(slave.address, RS485_MODBUS_REG_AC_2_FAN_SPEED,
+                                          fan_speed, "AC2_FAN") && ok;
+        ok = rs485_write_holding_register(slave.address, RS485_MODBUS_REG_AC_2_SWING_VERTICAL,
+                                          swing_mode, "AC2_SWING_V") && ok;
+        ok = rs485_write_holding_register(slave.address, RS485_MODBUS_REG_AC_2_SWING_HORIZONTAL,
+                                          99, "AC2_SWING_H") && ok;
     }
     return ok;
 }
@@ -1698,12 +1716,14 @@ void rs485_request_light_command(bool on) {
     data_unlock(g_state);
 }
 
-void rs485_request_ac_command(bool power, float target_c, uint8_t mode) {
+void rs485_request_ac_command(bool power, float target_c, uint8_t mode, uint8_t fan_speed, uint8_t swing_mode) {
     data_lock(g_state);
     g_state.rs485.ac_command_requested = true;
     g_state.rs485.ac_command_power = power;
     g_state.rs485.ac_command_target_c = target_c;
     g_state.rs485.ac_command_mode = mode;
+    g_state.rs485.ac_command_fan_speed = fan_speed;
+    g_state.rs485.ac_command_swing_mode = swing_mode;
     strncpy(g_state.rs485.status, "Queued AC command", sizeof(g_state.rs485.status) - 1);
     g_state.rs485.status[sizeof(g_state.rs485.status) - 1] = '\0';
     g_state.ui_needs_update = true;
@@ -2314,6 +2334,8 @@ static void rs485_handle_control_commands() {
     bool ac_power = false;
     float ac_target_c = 0.0f;
     uint8_t ac_mode = 0;
+    uint8_t ac_fan_speed = 0;
+    uint8_t ac_swing_mode = 0;
     bool projector_requested = false;
     bool projector_power = false;
     uint8_t projector_input = 0;
@@ -2326,6 +2348,8 @@ static void rs485_handle_control_commands() {
         ac_power = g_state.rs485.ac_command_power;
         ac_target_c = g_state.rs485.ac_command_target_c;
         ac_mode = g_state.rs485.ac_command_mode;
+        ac_fan_speed = g_state.rs485.ac_command_fan_speed;
+        ac_swing_mode = g_state.rs485.ac_command_swing_mode;
         projector_requested = g_state.rs485.projector_command_requested;
         projector_power = g_state.rs485.projector_command_power;
         projector_input = g_state.rs485.projector_command_input;
@@ -2346,7 +2370,7 @@ static void rs485_handle_control_commands() {
     }
 
     if (ac_requested) {
-        bool ok = rs485_write_ac_command(ac_power, ac_target_c, ac_mode);
+        bool ok = rs485_write_ac_command(ac_power, ac_target_c, ac_mode, ac_fan_speed, ac_swing_mode);
         data_lock(g_state);
         snprintf(g_state.rs485.status, sizeof(g_state.rs485.status),
                  ok ? "AC command sent" : "AC command failed");

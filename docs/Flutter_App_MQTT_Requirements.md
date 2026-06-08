@@ -15,7 +15,7 @@ Why:
 Implementation effect:
 - Flutter app harus subscribe ke topic sensor/actuator yang relevan untuk class/room terpilih.
 - Firmware master harus publish state per sensor type dan subscribe command actuator per actuator type.
-- Single master state JSON V1 tidak lagi menjadi primary contract.
+- Single master state JSON V1 tidak lagi dipublish periodik oleh Firmware V2.5.
 
 ---
 
@@ -69,8 +69,9 @@ Direction rule:
 Changed:
 - Each sensor data type SHALL have its own MQTT publish topic.
 - General simple sensors SHALL publish integer payloads.
-- LED SHALL publish JSON because it represents 4 LED positions.
-- Temperature SHALL publish JSON because it represents 4 DHT22 readings.
+- LED SHALL publish an integer scalar, `1` for ON and `0` for OFF.
+- Temperature SHALL publish one integer average in Celsius, rounded from valid temperature slots.
+- AC SHALL use `PPTTFFSS` because it carries power, target temperature, fan speed, and swing.
 
 Why:
 - Simple sensors are easier to process as integer payloads.
@@ -81,20 +82,21 @@ Implementation effect:
 - MQTT consumers must not expect one shared master state JSON as the primary data source.
 
 Payload rules:
+- Temperature: integer average Celsius, example value `27`; `-1` means no valid temperature reading.
 - CO2: integer payload, example value `720`.
 - Lux: integer payload, example value `350`.
 - Presence: integer payload, example values `0` or `1`.
+- LED: integer payload, `1` means ON and `0` means OFF.
+- Projector: integer payload, `1` means ON and `0` means OFF.
 - Simple scalar sensors: integer payload unless a later spec explicitly says otherwise.
-- LED: JSON payload with ON/OFF state per LED position.
-- Temperature: JSON payload with fixed slots for 4 DHT22 sensors.
 
 MQTT delivery policy:
 
 | MQTT message type | QoS | Retain | App behavior |
 |---|---:|---|---|
 | Simple sensor publish | 0 | true | App may receive last-known integer value immediately after subscribe. |
-| LED state publish | 1 | true | App should treat retained LED JSON as last confirmed LED state. |
-| Temperature JSON publish | 0 | true | App may receive last-known 4-slot temperature JSON immediately after subscribe. |
+| LED/projector state publish | 1 | true | App should treat retained `1`/`0` as last confirmed actuator state. |
+| Temperature average publish | 0 | true | App may receive last-known average temperature immediately after subscribe. |
 | Actuator command | 1 | false | App commands must not be retained; old commands must not replay after reconnect. |
 | Master/device status publish | 1 | true | App may use retained status and device metadata for discovery/last-known master state. |
 
@@ -107,72 +109,48 @@ Implementation effect: Flutter app should accept retained sensor/status messages
 ### 2.1 Temperature Publish Payload
 
 Changed:
-- Temperature is published as JSON with 4 fixed DHT22 positions.
+- Temperature is published as one integer average in Celsius.
 
 Why:
-- One temperature slave type may represent up to 4 DHT22 readings, and the app must not compact or reorder the positions.
+- The dashboard/app only needs the room-level temperature summary for MQTT, while detailed per-slot temperature stays local to the master UI.
 
 Implementation effect:
-- Flutter app must render the 4 temperature positions as fixed slots.
-- Missing or unavailable readings should remain empty/stale in their original slot.
+- Flutter app parses `HD01/suhu` as an integer.
+- Payload `-1` means no valid temperature slot is currently available.
 
-Example payload, not hardcoded. Metadata comment lines are documentation markers only and are not MQTT payload fields:
+Example payload:
 
 ```text
-// EDIT_TARGET: docs/Flutter_App_MQTT_Requirements.md section 2.1
-// EDIT_PURPOSE: Document Firmware V2 temperature MQTT JSON payload
-// EDIT_REASON: Temperature uses 4 fixed DHT22 positions and cannot be represented safely as one integer
-{
-  "sensor": "temperature",
-  "unit": "celsius",
-  "values": [27, 28, null, 26],
-  "positions": ["DHT22_1", "DHT22_2", "DHT22_3", "DHT22_4"],
-  "timestamp_ms": 1716600000
-}
+27
 ```
 
 Parsing rules:
-- `values[0]` maps to DHT22 position 1.
-- `values[1]` maps to DHT22 position 2.
-- `values[2]` maps to DHT22 position 3.
-- `values[3]` maps to DHT22 position 4.
-- `null` means unavailable, not installed, or stale.
-- App SHALL NOT shift non-null values into earlier slots.
+- Read the whole payload as a signed integer.
+- Values `0..80` are normal Celsius display values.
+- `-1` means unavailable, stale, not installed, or no valid slots.
 
 ### 2.2 LED Publish Payload
 
 Changed:
-- LED state is published as JSON with 4 LED positions.
+- LED state is published as one integer scalar.
 
 Why:
-- LED synchronization needs ON/OFF state per physical/logical position.
+- The Flutter dashboard only needs room-level LED ON/OFF status for the current control surface.
 
 Implementation effect:
 - Flutter app must treat LED publish payload as source of truth after command confirmation.
 - App should update local UI state from the latest LED publish message, not from optimistic command state alone.
 
-Example payload, not hardcoded. Metadata comment lines are documentation markers only and are not MQTT payload fields:
+Example payload:
 
 ```text
-// EDIT_TARGET: docs/Flutter_App_MQTT_Requirements.md section 2.2
-// EDIT_PURPOSE: Document Firmware V2 LED MQTT JSON payload
-// EDIT_REASON: LED controls four positions and must synchronize confirmed ON/OFF state
-{
-  "actuator": "led",
-  "positions": [
-    { "id": 1, "state": "ON" },
-    { "id": 2, "state": "OFF" },
-    { "id": 3, "state": "OFF" },
-    { "id": 4, "state": "ON" }
-  ],
-  "timestamp_ms": 1716600000
-}
+1
 ```
 
 Parsing rules:
-- LED IDs SHALL use positions `1..4`.
-- State values SHOULD be `ON` or `OFF`.
-- Missing LED positions SHALL be treated as unavailable or stale, not OFF by default.
+- `1` means ON.
+- `0` means OFF.
+- Firmware command input accepts `1`, `0`, `on`, `off`, `true`, or `false`.
 
 ---
 
@@ -181,7 +159,8 @@ Parsing rules:
 Changed:
 - Firmware V2 subscribes to actuator control topics such as LED, AC, and Projector.
 - Command flow is command received, forward to target slave, wait for command result, then publish updated command/status state.
-- AC and Projector command payloads SHALL be JSON.
+- AC command payload SHALL use the 8-digit decimal format `PPTTFFSS`.
+- LED and Projector command payloads SHOULD be scalar `1` or `0`; JSON remains accepted for compatibility.
 
 Why:
 - The app/dashboard must synchronize with the master's confirmed state or command result, not only requested state.
@@ -220,31 +199,57 @@ AC control panel rule:
 - When the master exposes both AC 1 and AC 2 under an IR-capable device profile, the master SHALL mirror the same AC command to AC 1 and AC 2.
 - Flutter SHALL NOT require separate AC 1 and AC 2 panels for the current implementation.
 
-JSON command examples, not hardcoded. Metadata comment lines are documentation markers only and are not MQTT payload fields:
+AC command example:
 
 ```text
-// EDIT_TARGET: docs/Flutter_App_MQTT_Requirements.md section 3
-// EDIT_PURPOSE: Document Firmware V2 AC JSON command payload
-// EDIT_REASON: AC command payload is JSON so power, target temperature, and future mode fields can be extended safely
-{
-  "actuator": "ac",
-  "power": "ON",
-  "target_c": 24
-}
+01240201
 ```
+
+Meaning:
+- `01`: AC ON.
+- `24`: target temperature 24 C.
+- `02`: fan speed medium.
+- `01`: swing auto.
+
+AC payload format:
+- `PP`: `00` off, `01` on.
+- `TT`: target temperature, `16..30`.
+- `FF`: fan speed enum.
+- `SS`: swing/vertical vane enum.
+
+Fan speed enum:
+- `00`: auto.
+- `01`: low.
+- `02`: medium.
+- `03`: high.
+- `04`: quiet/silent.
+- `05`: turbo/powerful.
+- `06..98`: reserved.
+- `99`: no change / unsupported.
+
+Swing enum:
+- `00`: off/fixed.
+- `01`: auto swing.
+- `02`: up.
+- `03`: mid-up.
+- `04`: middle.
+- `05`: mid-down.
+- `06`: down.
+- `07`: step next.
+- `08`: step previous.
+- `09`: auto comfort.
+- `10`: auto powerful.
+- `11..98`: reserved.
+- `99`: no change / unsupported.
+
+Projector command example:
 
 ```text
-// EDIT_TARGET: docs/Flutter_App_MQTT_Requirements.md section 3
-// EDIT_PURPOSE: Document Firmware V2 Projector JSON command payload
-// EDIT_REASON: Projector command payload is JSON so power and input fields can be extended safely
-{
-  "actuator": "projector",
-  "power": "OFF"
-}
+0
 ```
 
-Open question:
-- Final JSON field names for optional AC mode and projector input may be expanded later. The required decision is no longer open: AC and Projector commands use JSON.
+AC target rule:
+- Firmware clamps `TT` to `16..30` degrees Celsius before forwarding the command to the RS485 slave.
 
 ---
 
@@ -286,13 +291,13 @@ Settings / Device Info requirements:
 - Editing class/room name SHALL update default topic labels/templates, for example `HD01` -> `HD01/co2` and `LA2` -> `LA2/co2`.
 
 Home SHOULD show:
-- Temperature positions 1-4 from the temperature JSON topic.
+- Average temperature from the integer `suhu` topic.
 - CO2 integer value.
 - Lux integer value if available.
 - Presence integer/binary value if available.
-- LED positions 1-4 from the LED JSON topic.
+- LED ON/OFF from the integer `led` topic.
 - One AC control panel if configured; master mirrors to AC 1 and AC 2 when both are exposed.
-- Projector command/result state if configured.
+- Projector ON/OFF from the integer `projector` topic if configured.
 
 Control behavior:
 - App SHALL send commands only for available actuator topics.

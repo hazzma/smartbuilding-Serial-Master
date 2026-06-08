@@ -1,5 +1,27 @@
 # Smart Building Connectivity & Dashboard Mapping Design
 
+## V2.5 Normal UI Override
+
+Firmware V2.5 keeps dashboard mapping as an internal automatic mechanism, but
+removes manual mapping and manual Modbus test controls from the normal UI.
+
+The normal Slave Manager UI SHALL expose:
+
+```text
+DISCOVER
+POLL ON / POLL OFF
+Device List
+Device Detail
+DELETE
+SAVE
+```
+
+`PING`, `READ`, and `INFO` remain available through firmware diagnostics and
+serial debug tooling. They SHALL NOT appear as normal Slave Manager buttons.
+
+The Device Detail page SHALL NOT expose `MAP` or manual dashboard mapping.
+Profile and feature changes SHALL trigger the existing automatic mapping logic.
+
 ## Project
 Smart Building Master S3
 

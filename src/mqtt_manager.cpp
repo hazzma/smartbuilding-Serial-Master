@@ -4,6 +4,7 @@
 #include <Ethernet.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
+#include <ctype.h>
 #include "data.h"
 #include "rs485_manager.h"
 
@@ -27,6 +28,14 @@ EthernetClient   ethClient;
 PubSubClient     mqttClient;
 
 static char mqtt_publish_payload[4096];
+
+static void mqtt_set_connected_state(bool connected) {
+    data_lock(g_state);
+    bool changed = g_state.net.mqtt_ok != connected;
+    g_state.net.mqtt_ok = connected;
+    if (changed) g_state.ui_needs_update = true;
+    data_unlock(g_state);
+}
 
 enum MqttTopicKind : uint8_t {
     MQTT_TOPIC_SUHU,
@@ -86,6 +95,90 @@ static bool mqtt_publish_json(const char* topic, JsonDocument& doc, bool retaine
                   (unsigned)payload_len,
                   retained ? "true" : "false");
     return ok;
+}
+
+static bool mqtt_parse_bool_payload(const byte* payload, unsigned int length, bool& value) {
+    if (!payload || length == 0) return false;
+
+    char buf[12];
+    unsigned int copy_len = length < sizeof(buf) - 1 ? length : sizeof(buf) - 1;
+    memcpy(buf, payload, copy_len);
+    buf[copy_len] = '\0';
+
+    char* start = buf;
+    while (*start == ' ' || *start == '\t' || *start == '\r' || *start == '\n') start++;
+    char* end = start + strlen(start);
+    while (end > start && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r' || end[-1] == '\n')) {
+        *--end = '\0';
+    }
+
+    if (strcmp(start, "1") == 0 || strcasecmp(start, "on") == 0 || strcasecmp(start, "true") == 0) {
+        value = true;
+        return true;
+    }
+    if (strcmp(start, "0") == 0 || strcasecmp(start, "off") == 0 || strcasecmp(start, "false") == 0) {
+        value = false;
+        return true;
+    }
+    return false;
+}
+
+static float mqtt_clamp_ac_target(float target_c) {
+    if (target_c < 16.0f) return 16.0f;
+    if (target_c > 30.0f) return 30.0f;
+    return target_c;
+}
+
+static uint8_t mqtt_clamp_ac_target_u8(float target_c) {
+    return (uint8_t)(mqtt_clamp_ac_target(target_c) + 0.5f);
+}
+
+static uint8_t mqtt_normalize_ac_enum(uint8_t value) {
+    return value <= 99 ? value : 99;
+}
+
+static void mqtt_format_ac_payload(bool power, float target_c, uint8_t fan_speed, uint8_t swing_mode,
+                                   char* out, size_t out_len) {
+    snprintf(out, out_len, "%02u%02u%02u%02u",
+             power ? 1 : 0,
+             mqtt_clamp_ac_target_u8(target_c),
+             mqtt_normalize_ac_enum(fan_speed),
+             mqtt_normalize_ac_enum(swing_mode));
+}
+
+static bool mqtt_parse_ac_payload(const byte* payload, unsigned int length,
+                                  bool& power, float& target_c,
+                                  uint8_t& fan_speed, uint8_t& swing_mode) {
+    if (!payload || length == 0) return false;
+
+    char buf[16];
+    unsigned int copy_len = length < sizeof(buf) - 1 ? length : sizeof(buf) - 1;
+    memcpy(buf, payload, copy_len);
+    buf[copy_len] = '\0';
+
+    char* start = buf;
+    while (*start == ' ' || *start == '\t' || *start == '\r' || *start == '\n') start++;
+    char* end = start + strlen(start);
+    while (end > start && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r' || end[-1] == '\n')) {
+        *--end = '\0';
+    }
+
+    if (strlen(start) != 8) return false;
+    for (uint8_t i = 0; i < 8; i++) {
+        if (!isdigit((unsigned char)start[i])) return false;
+    }
+
+    uint8_t pp = (start[0] - '0') * 10 + (start[1] - '0');
+    uint8_t tt = (start[2] - '0') * 10 + (start[3] - '0');
+    uint8_t ff = (start[4] - '0') * 10 + (start[5] - '0');
+    uint8_t ss = (start[6] - '0') * 10 + (start[7] - '0');
+    if (pp > 1) return false;
+
+    power = pp == 1;
+    target_c = mqtt_clamp_ac_target((float)tt);
+    fan_speed = mqtt_normalize_ac_enum(ff);
+    swing_mode = mqtt_normalize_ac_enum(ss);
+    return true;
 }
 
 static void mqtt_add_capability_name(JsonArray arr, uint16_t mask, uint16_t capability, const char* name) {
@@ -287,15 +380,15 @@ static void mqtt_publish_v2_state() {
     char topic_projector[48];
     char topic_master[48];
 
-    JsonDocument temp_doc;
-    JsonDocument led_doc;
-    JsonDocument ac_doc;
-    JsonDocument projector_doc;
     JsonDocument master_doc;
 
+    char temp_payload[16];
     char co2_payload[16];
     char lux_payload[16];
     char human_payload[8];
+    char led_payload[8];
+    char ac_payload[12];
+    char projector_payload[8];
 
     data_lock(g_state);
 
@@ -308,24 +401,16 @@ static void mqtt_publish_v2_state() {
     mqtt_build_topic_locked(MQTT_TOPIC_PROJECTOR, topic_projector, sizeof(topic_projector));
     mqtt_build_topic_locked(MQTT_TOPIC_MASTER, topic_master, sizeof(topic_master));
 
-    temp_doc["sensor"] = "temperature";
-    temp_doc["unit"] = "celsius";
-    JsonArray values = temp_doc["values"].to<JsonArray>();
     float sum = 0.0f;
     uint8_t valid_temp = 0;
     for (uint8_t i = 0; i < DASHBOARD_TEMP_SLOTS; i++) {
         if (g_state.rs485.dashboard.temp_valid[i]) {
-            float value = g_state.rs485.dashboard.temp[i];
-            values.add(value);
-            sum += value;
+            sum += g_state.rs485.dashboard.temp[i];
             valid_temp++;
-        } else {
-            values.add(nullptr);
         }
     }
-    if (valid_temp > 0) temp_doc["avg_c"] = sum / valid_temp;
-    else temp_doc["avg_c"].set(nullptr);
-    temp_doc["timestamp_ms"] = millis();
+    if (valid_temp > 0) snprintf(temp_payload, sizeof(temp_payload), "%d", (int)((sum / valid_temp) + 0.5f));
+    else snprintf(temp_payload, sizeof(temp_payload), "-1");
 
     if (g_state.rs485.dashboard.co2_valid) snprintf(co2_payload, sizeof(co2_payload), "%d", g_state.rs485.dashboard.co2);
     else snprintf(co2_payload, sizeof(co2_payload), "-1");
@@ -336,8 +421,7 @@ static void mqtt_publish_v2_state() {
     if (g_state.rs485.dashboard.human_presence_valid) snprintf(human_payload, sizeof(human_payload), "%u", g_state.rs485.dashboard.human_presence ? 1 : 0);
     else snprintf(human_payload, sizeof(human_payload), "-1");
 
-    led_doc["actuator"] = "led";
-    JsonArray positions = led_doc["positions"].to<JsonArray>();
+    bool led_on = false;
     uint8_t light_id = 1;
     uint8_t slave_count = g_state.rs485.slave_count;
     if (slave_count > RS485_MAX_SLAVES) slave_count = RS485_MAX_SLAVES;
@@ -348,29 +432,20 @@ static void mqtt_publish_v2_state() {
         if (relay_count == 0 && (slave.capability & CAP_LIGHT_RELAY)) relay_count = 1;
         if (relay_count > 2) relay_count = 2;
         for (uint8_t relay = 0; relay < relay_count && light_id <= 4; relay++) {
-            JsonObject pos = positions.add<JsonObject>();
-            pos["id"] = light_id;
-            pos["state"] = slave.relay_state[relay] ? "ON" : "OFF";
+            if (slave.relay_state[relay]) led_on = true;
             light_id++;
         }
     }
-    led_doc["timestamp_ms"] = millis();
+    snprintf(led_payload, sizeof(led_payload), "%u", led_on ? 1 : 0);
 
-    ac_doc["actuator"] = "ac";
-    ac_doc["available"] = g_state.rs485.dashboard.ac_available;
-    ac_doc["status_type"] = "command_result";
-    ac_doc["physical_state_verified"] = false;
-    ac_doc["mirror_ac_1_ac_2"] = mqtt_has_ir_combo_locked();
-    ac_doc["power"] = g_state.sensor.ac_on ? "ON" : "OFF";
-    ac_doc["target_c"] = g_state.sensor.temp_target;
-    ac_doc["timestamp_ms"] = millis();
+    mqtt_format_ac_payload(g_state.sensor.ac_on,
+                           g_state.sensor.temp_target,
+                           g_state.sensor.ac_fan_speed,
+                           g_state.sensor.ac_swing_mode,
+                           ac_payload,
+                           sizeof(ac_payload));
 
-    projector_doc["actuator"] = "projector";
-    projector_doc["available"] = g_state.rs485.dashboard.projector_available;
-    projector_doc["status_type"] = "command_result";
-    projector_doc["physical_state_verified"] = false;
-    projector_doc["power"] = g_state.sensor.projector_on ? "ON" : "OFF";
-    projector_doc["timestamp_ms"] = millis();
+    snprintf(projector_payload, sizeof(projector_payload), "%u", g_state.sensor.projector_on ? 1 : 0);
 
     master_doc["type"] = "smart_building_master_status";
     master_doc["device_name"] = mqtt_device_name_locked();
@@ -427,19 +502,18 @@ static void mqtt_publish_v2_state() {
 
     data_unlock(g_state);
 
-    mqtt_publish_json(topic_suhu, temp_doc, true, "temperature");
+    mqtt_publish_raw(topic_suhu, temp_payload, true, "temperature");
     mqtt_publish_raw(topic_co2, co2_payload, true, "co2");
     mqtt_publish_raw(topic_lux, lux_payload, true, "lux");
     mqtt_publish_raw(topic_human, human_payload, true, "human");
-    mqtt_publish_json(topic_led, led_doc, true, "led");
-    mqtt_publish_json(topic_ac, ac_doc, true, "ac");
-    mqtt_publish_json(topic_projector, projector_doc, true, "projector");
+    mqtt_publish_raw(topic_led, led_payload, true, "led");
+    mqtt_publish_raw(topic_ac, ac_payload, true, "ac");
+    mqtt_publish_raw(topic_projector, projector_payload, true, "projector");
     mqtt_publish_json(topic_master, master_doc, true, "master-status");
 }
 
 static void mqtt_publish_state() {
     mqtt_publish_v2_state();
-    mqtt_publish_legacy_state();
 }
 
 static void mqtt_callback(char* topic, byte* payload, unsigned int length) {
@@ -452,14 +526,25 @@ static void mqtt_callback(char* topic, byte* payload, unsigned int length) {
     mqtt_build_topic_locked(MQTT_TOPIC_PROJECTOR, topic_projector, sizeof(topic_projector));
     data_unlock(g_state);
 
-    JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, payload, length);
-    if (error) {
-        Serial.printf("[MQTT] JSON parse failed: %s\n", error.c_str());
-        return;
-    }
-
     if (strcmp(topic, topic_led) == 0) {
+        bool scalar_on = false;
+        if (mqtt_parse_bool_payload(payload, length, scalar_on)) {
+            data_lock(g_state);
+            g_state.sensor.light_on = scalar_on;
+            g_state.ui_needs_update = true;
+            data_unlock(g_state);
+            rs485_request_light_command(scalar_on);
+            Serial.println("[MQTT] LED scalar command applied");
+            mqtt_publish_state();
+            return;
+        }
+
+        JsonDocument doc;
+        DeserializationError error = deserializeJson(doc, payload, length);
+        if (error) {
+            Serial.printf("[MQTT] JSON parse failed: %s\n", error.c_str());
+            return;
+        }
         if (doc["positions"].is<JsonArray>() && doc["command"].isNull() && doc["power"].isNull()) {
             return;
         }
@@ -497,10 +582,32 @@ static void mqtt_callback(char* topic, byte* payload, unsigned int length) {
     }
 
     if (strcmp(topic, topic_ac) == 0) {
-        if (!doc["available"].isNull() && doc["power"].is<const char*>()) return;
-
         bool desired_power = false;
         float desired_target = 0.0f;
+        uint8_t desired_fan = 0;
+        uint8_t desired_swing = 0;
+        if (mqtt_parse_ac_payload(payload, length, desired_power, desired_target, desired_fan, desired_swing)) {
+            data_lock(g_state);
+            g_state.sensor.ac_on = desired_power;
+            g_state.sensor.temp_target = desired_target;
+            g_state.sensor.ac_fan_speed = desired_fan;
+            g_state.sensor.ac_swing_mode = desired_swing;
+            g_state.ui_needs_update = true;
+            data_unlock(g_state);
+            rs485_request_ac_command(desired_power, desired_target, 0, desired_fan, desired_swing);
+            Serial.println("[MQTT] AC PPTTFFSS command applied");
+            mqtt_publish_state();
+            return;
+        }
+
+        JsonDocument doc;
+        DeserializationError error = deserializeJson(doc, payload, length);
+        if (error) {
+            Serial.printf("[MQTT] JSON parse failed: %s\n", error.c_str());
+            return;
+        }
+        if (!doc["available"].isNull() && doc["power"].is<const char*>()) return;
+
         data_lock(g_state);
         if (!doc["power"].isNull()) {
             if (doc["power"].is<const char*>()) {
@@ -511,19 +618,45 @@ static void mqtt_callback(char* topic, byte* payload, unsigned int length) {
             }
         }
         if (!doc["target_c"].isNull()) {
-            g_state.sensor.temp_target = doc["target_c"].as<float>();
+            g_state.sensor.temp_target = mqtt_clamp_ac_target(doc["target_c"].as<float>());
+        }
+        if (!doc["fan_speed"].isNull()) {
+            g_state.sensor.ac_fan_speed = mqtt_normalize_ac_enum(doc["fan_speed"].as<uint8_t>());
+        }
+        if (!doc["swing"].isNull()) {
+            g_state.sensor.ac_swing_mode = mqtt_normalize_ac_enum(doc["swing"].as<uint8_t>());
         }
         desired_power = g_state.sensor.ac_on;
         desired_target = g_state.sensor.temp_target;
+        desired_fan = g_state.sensor.ac_fan_speed;
+        desired_swing = g_state.sensor.ac_swing_mode;
         g_state.ui_needs_update = true;
         data_unlock(g_state);
-        rs485_request_ac_command(desired_power, desired_target);
+        rs485_request_ac_command(desired_power, desired_target, 0, desired_fan, desired_swing);
         Serial.println("[MQTT] AC command applied");
         mqtt_publish_state();
         return;
     }
 
     if (strcmp(topic, topic_projector) == 0) {
+        bool scalar_on = false;
+        if (mqtt_parse_bool_payload(payload, length, scalar_on)) {
+            data_lock(g_state);
+            g_state.sensor.projector_on = scalar_on;
+            g_state.ui_needs_update = true;
+            data_unlock(g_state);
+            rs485_request_projector_command(scalar_on);
+            Serial.println("[MQTT] Projector scalar command applied");
+            mqtt_publish_state();
+            return;
+        }
+
+        JsonDocument doc;
+        DeserializationError error = deserializeJson(doc, payload, length);
+        if (error) {
+            Serial.printf("[MQTT] JSON parse failed: %s\n", error.c_str());
+            return;
+        }
         if (!doc["available"].isNull() && doc["power"].is<const char*>()) return;
 
         bool desired_power = false;
@@ -546,6 +679,12 @@ static void mqtt_callback(char* topic, byte* payload, unsigned int length) {
     }
 
     if (strcmp(topic, mqtt_topic_sub) == 0) {
+        JsonDocument doc;
+        DeserializationError error = deserializeJson(doc, payload, length);
+        if (error) {
+            Serial.printf("[MQTT] JSON parse failed: %s\n", error.c_str());
+            return;
+        }
         const char* type = doc["type"] | "";
         if (strcmp(type, "smart_building_master_state") == 0) {
             return;
@@ -558,6 +697,8 @@ static void mqtt_callback(char* topic, byte* payload, unsigned int length) {
             bool ac_changed = false;
             bool ac_power = false;
             float ac_target = 0.0f;
+            uint8_t ac_fan = 0;
+            uint8_t ac_swing = 0;
             bool light_changed = false;
             bool light_power = false;
             data_lock(g_state);
@@ -571,11 +712,21 @@ static void mqtt_callback(char* topic, byte* payload, unsigned int length) {
                 ac_changed = true;
             }
             if (!controls["ac"]["target_c"].isNull()) {
-                g_state.sensor.temp_target = controls["ac"]["target_c"].as<float>();
+                g_state.sensor.temp_target = mqtt_clamp_ac_target(controls["ac"]["target_c"].as<float>());
+                ac_changed = true;
+            }
+            if (!controls["ac"]["fan_speed"].isNull()) {
+                g_state.sensor.ac_fan_speed = mqtt_normalize_ac_enum(controls["ac"]["fan_speed"].as<uint8_t>());
+                ac_changed = true;
+            }
+            if (!controls["ac"]["swing"].isNull()) {
+                g_state.sensor.ac_swing_mode = mqtt_normalize_ac_enum(controls["ac"]["swing"].as<uint8_t>());
                 ac_changed = true;
             }
             ac_power = g_state.sensor.ac_on;
             ac_target = g_state.sensor.temp_target;
+            ac_fan = g_state.sensor.ac_fan_speed;
+            ac_swing = g_state.sensor.ac_swing_mode;
             if (controls["lights"].is<JsonArray>()) {
                 for (JsonObject light : controls["lights"].as<JsonArray>()) {
                     if (!light["power"].isNull()) {
@@ -588,7 +739,7 @@ static void mqtt_callback(char* topic, byte* payload, unsigned int length) {
             g_state.ui_needs_update = true;
             data_unlock(g_state);
             if (projector_changed) rs485_request_projector_command(projector_power);
-            if (ac_changed) rs485_request_ac_command(ac_power, ac_target);
+            if (ac_changed) rs485_request_ac_command(ac_power, ac_target, 0, ac_fan, ac_swing);
             if (light_changed) rs485_request_light_command(light_power);
             Serial.println("[MQTT] Command applied");
             mqtt_publish_state();
@@ -677,38 +828,50 @@ static void reconnect() {
             mqttClient.setServer(server, port);
             Serial.print(use_tls ? "[MQTT] Connecting via WiFi (TLS)..." : "[MQTT] Connecting via WiFi...");
         } else {
+            mqtt_set_connected_state(false);
             return;
         }
 
+        Serial.printf("[MQTT] Target server=%s port=%u tls=%s user=%s\n",
+                      server,
+                      port,
+                      use_tls ? "yes" : "no",
+                      user[0] ? user : "(empty)");
         String clientId = "MasterS3-" + String(random(0xffff), HEX);
         if (mqttClient.connect(clientId.c_str(), user, pass)) {
             Serial.println("OK");
-            mqttClient.subscribe(mqtt_topic_sub, 1);
+            if (mqtt_topic_pub && mqtt_topic_pub[0]) {
+                bool cleared = mqttClient.publish(mqtt_topic_pub, "", true);
+                Serial.printf("[MQTT] Clear legacy retained topic=%s %s\n",
+                              mqtt_topic_pub,
+                              cleared ? "OK" : "FAIL");
+            }
             mqtt_subscribe_v2_topics();
-            data_lock(g_state);
-            g_state.net.mqtt_ok = true;
-            data_unlock(g_state);
+            mqtt_set_connected_state(true);
             mqtt_publish_state();
         } else {
             Serial.printf("Failed (rc=%d)\n", mqttClient.state());
-            data_lock(g_state);
-            g_state.net.mqtt_ok = false;
-            data_unlock(g_state);
+            mqtt_set_connected_state(false);
         }
     }
 }
 
 void mqtt_loop() {
     bool has_net = g_state.net.wifi_connected || g_state.net.lan_connected;
-    if (!has_net) return;
+    if (!has_net) {
+        mqtt_set_connected_state(false);
+        return;
+    }
 
     if (!mqttClient.connected()) {
+        mqtt_set_connected_state(false);
         static uint32_t last_reconnect = 0;
         if (millis() - last_reconnect > 5000) {
             last_reconnect = millis();
             reconnect();
         }
     } else {
+        mqtt_set_connected_state(true);
         mqttClient.loop();
         static uint32_t last_publish = 0;
         uint32_t now = millis();

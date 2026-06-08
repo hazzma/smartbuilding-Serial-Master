@@ -19,9 +19,6 @@ static bool dashboard_env_panel = false;
 static bool dashboard_dragging = false;
 static bool dashboard_moved = false;
 static int  dashboard_drag_start_y = 0;
-static uint8_t dashboard_ac_swing_mode = 0;
-static uint8_t dashboard_ac_fan_mode = 0;
-
 static char temp_lan_ip[16] = "192.168.1.177";
 static char temp_lan_gw[16] = "192.168.1.1";
 static char temp_lan_sn[16] = "255.255.255.0";
@@ -220,6 +217,8 @@ struct DashboardUiModel {
     bool slave_online;
     float ac_target_temp;
     bool ac_on;
+    uint8_t ac_fan_speed;
+    uint8_t ac_swing_mode;
     bool projector_on;
     bool led_on;
     bool ac_mirrors;
@@ -278,6 +277,8 @@ static DashboardUiModel dashboard_make_ui_model(const BuildingState& state) {
     model.slave_online = rs485_has_online_slave(state.rs485);
     model.ac_target_temp = state.sensor.temp_target;
     model.ac_on = state.sensor.ac_on;
+    model.ac_fan_speed = state.sensor.ac_fan_speed;
+    model.ac_swing_mode = state.sensor.ac_swing_mode;
     model.projector_on = state.sensor.projector_on;
     model.led_on = state.sensor.light_on;
     model.ac_mirrors = rs485_has_ir_combo_node(state.rs485);
@@ -290,8 +291,8 @@ static void dashboard_draw_ac_widget(int x, int y, int w, int h, const Dashboard
     drawAcTargetWidget(x, y, w, h, model.ac_target_temp, model.ac_on);
     if (h < 180) return;
 
-    static const char* SWING_MODES[] = {"AUTO", "UP", "MID", "DOWN"};
-    static const char* FAN_MODES[] = {"AUTO", "LOW", "MID", "HIGH"};
+    static const char* SWING_MODES[] = {"FIX", "AUTO", "UP", "MID+", "MID", "MID-", "DOWN", "NEXT", "PREV", "COMF", "PWR"};
+    static const char* FAN_MODES[] = {"AUTO", "LOW", "MID", "HIGH", "QUIET", "TURBO"};
     int button_y = y + h - 62;
     int button_w = (w - 30) / 2;
 
@@ -306,8 +307,14 @@ static void dashboard_draw_ac_widget(int x, int y, int w, int h, const Dashboard
 
     p_canvas->setTextFont(2);
     p_canvas->setTextColor(COLOR_TEXT_MAIN);
-    p_canvas->drawString(SWING_MODES[dashboard_ac_swing_mode], x + 10 + button_w / 2, button_y + 36);
-    p_canvas->drawString(FAN_MODES[dashboard_ac_fan_mode], x + 20 + button_w + button_w / 2, button_y + 36);
+    const char* swing_label = model.ac_swing_mode < (sizeof(SWING_MODES) / sizeof(SWING_MODES[0]))
+                                  ? SWING_MODES[model.ac_swing_mode]
+                                  : "--";
+    const char* fan_label = model.ac_fan_speed < (sizeof(FAN_MODES) / sizeof(FAN_MODES[0]))
+                                ? FAN_MODES[model.ac_fan_speed]
+                                : "--";
+    p_canvas->drawString(swing_label, x + 10 + button_w / 2, button_y + 36);
+    p_canvas->drawString(fan_label, x + 20 + button_w + button_w / 2, button_y + 36);
     p_canvas->setTextDatum(TextDatum::TopLeft);
 }
 
@@ -1714,10 +1721,6 @@ void render_slave_manager(BuildingState& state) {
     drawCardBase(144, 104, 104, 38, state.rs485.poll_enabled ? COLOR_STAT_ON : COLOR_CARD_BG);
     if (state.rs485.pairing_candidate_ready) {
         drawCardBase(260, 104, 200, 38, COLOR_STAT_ON);
-    } else {
-        drawCardBase(260, 104, 60, 38, COLOR_CARD_BG);
-        drawCardBase(330, 104, 60, 38, COLOR_CARD_BG);
-        drawCardBase(400, 104, 60, 38, COLOR_CARD_BG);
     }
     p_canvas->setTextDatum(TextDatum::MiddleCenter);
     p_canvas->setTextColor(COLOR_TEXT_MAIN);
@@ -1725,10 +1728,6 @@ void render_slave_manager(BuildingState& state) {
     p_canvas->drawString(state.rs485.poll_enabled ? "POLL ON" : "POLL OFF", 196, 123);
     if (state.rs485.pairing_candidate_ready) {
         p_canvas->drawString(pairing_candidate_is_unknown(state.rs485) ? "PAIR DEVICE" : "ASSIGN AUTO", 360, 123);
-    } else {
-        p_canvas->drawString("PING", 290, 123);
-        p_canvas->drawString("READ", 360, 123);
-        p_canvas->drawString("INFO", 430, 123);
     }
     p_canvas->setTextDatum(TextDatum::TopLeft);
 
@@ -1988,21 +1987,18 @@ void render_slave_detail(BuildingState& state) {
         p_canvas->setTextDatum(TextDatum::TopLeft);
     }
 
-    drawCardBase(20, 286, 96, 28, COLOR_STAT_ON);
+    drawCardBase(356, 286, 104, 28, COLOR_STAT_ON);
     if (total_pages > 1) drawCardBase(144, 286, 190, 28, COLOR_CARD_BG);
-    drawCardBase(356, 286, 104, 28, COLOR_CARD_BG);
     p_canvas->setTextDatum(TextDatum::MiddleCenter);
     p_canvas->setTextColor(COLOR_TEXT_MAIN);
     p_canvas->setTextFont(2);
-    p_canvas->drawString("SAVE", 68, 300);
+    p_canvas->drawString("SAVE", 408, 300);
     if (total_pages > 1) {
         char page_buf[28];
         snprintf(page_buf, sizeof(page_buf), "Page %u/%u  NEXT", slave_feature_page + 1, total_pages);
         p_canvas->setTextColor(COLOR_TEXT_SEC);
         p_canvas->drawString(page_buf, 239, 300);
     }
-    p_canvas->setTextColor(COLOR_TEXT_MAIN);
-    p_canvas->drawString("MAP", 408, 300);
     p_canvas->setTextDatum(TextDatum::TopLeft);
 }
 
@@ -2315,6 +2311,8 @@ void handle_dashboard_touch_legacy(BuildingState& state, int tx, int ty) {
         bool send_light = false;
         bool ac_power = false;
         float ac_target = 0.0f;
+        uint8_t ac_fan = 0;
+        uint8_t ac_swing = 0;
         bool projector_power = false;
         bool light_power = false;
         data_lock(state);
@@ -2325,11 +2323,13 @@ void handle_dashboard_touch_legacy(BuildingState& state, int tx, int ty) {
         else if (isHit(tx, ty, 362, 203, 110, 47)){ state.sensor.light_on     = !state.sensor.light_on; send_light = true; }
         ac_power = state.sensor.ac_on;
         ac_target = state.sensor.temp_target;
+        ac_fan = state.sensor.ac_fan_speed;
+        ac_swing = state.sensor.ac_swing_mode;
         projector_power = state.sensor.projector_on;
         light_power = state.sensor.light_on;
         state.ui_needs_update = true;
         data_unlock(state);
-        if (send_ac) rs485_request_ac_command(ac_power, ac_target);
+        if (send_ac) rs485_request_ac_command(ac_power, ac_target, 0, ac_fan, ac_swing);
         if (send_projector) rs485_request_projector_command(projector_power);
         if (send_light) rs485_request_light_command(light_power);
     }
@@ -2432,19 +2432,25 @@ void handle_dashboard_touch(BuildingState& state, int tx, int ty) {
         if (hit_rect(tx, ty, power_rect)) {
             bool ac_power = false;
             float ac_target = 0.0f;
+            uint8_t ac_fan = 0;
+            uint8_t ac_swing = 0;
             data_lock(state);
             state.sensor.ac_on = !state.sensor.ac_on;
             ac_power = state.sensor.ac_on;
             ac_target = state.sensor.temp_target;
+            ac_fan = state.sensor.ac_fan_speed;
+            ac_swing = state.sensor.ac_swing_mode;
             state.ui_needs_update = true;
             data_unlock(state);
-            rs485_request_ac_command(ac_power, ac_target);
+            rs485_request_ac_command(ac_power, ac_target, 0, ac_fan, ac_swing);
             return;
         }
 
         if (hit_rect(tx, ty, up_rect) || hit_rect(tx, ty, down_rect)) {
             bool ac_power = false;
             float ac_target = 0.0f;
+            uint8_t ac_fan = 0;
+            uint8_t ac_swing = 0;
             data_lock(state);
             if (hit_rect(tx, ty, up_rect)) {
                 state.sensor.temp_target = min(30.0f, state.sensor.temp_target + 1.0f);
@@ -2453,27 +2459,47 @@ void handle_dashboard_touch(BuildingState& state, int tx, int ty) {
             }
             ac_power = state.sensor.ac_on;
             ac_target = state.sensor.temp_target;
+            ac_fan = state.sensor.ac_fan_speed;
+            ac_swing = state.sensor.ac_swing_mode;
             state.ui_needs_update = true;
             data_unlock(state);
-            rs485_request_ac_command(ac_power, ac_target);
+            rs485_request_ac_command(ac_power, ac_target, 0, ac_fan, ac_swing);
             return;
         }
 
         if (expanded_controls && hit_rect(tx, ty, swing_rect)) {
-            dashboard_ac_swing_mode = (dashboard_ac_swing_mode + 1) % 4;
-            Serial.printf("[UI] Dummy AC swing mode: %u\n", dashboard_ac_swing_mode);
+            bool ac_power = false;
+            float ac_target = 0.0f;
+            uint8_t ac_fan = 0;
+            uint8_t ac_swing = 0;
             data_lock(state);
+            state.sensor.ac_swing_mode = (state.sensor.ac_swing_mode + 1) % 7;
+            ac_power = state.sensor.ac_on;
+            ac_target = state.sensor.temp_target;
+            ac_fan = state.sensor.ac_fan_speed;
+            ac_swing = state.sensor.ac_swing_mode;
             state.ui_needs_update = true;
             data_unlock(state);
+            Serial.printf("[UI] AC swing mode: %u\n", ac_swing);
+            rs485_request_ac_command(ac_power, ac_target, 0, ac_fan, ac_swing);
             return;
         }
 
         if (expanded_controls && hit_rect(tx, ty, fan_rect)) {
-            dashboard_ac_fan_mode = (dashboard_ac_fan_mode + 1) % 4;
-            Serial.printf("[UI] Dummy AC fan mode: %u\n", dashboard_ac_fan_mode);
+            bool ac_power = false;
+            float ac_target = 0.0f;
+            uint8_t ac_fan = 0;
+            uint8_t ac_swing = 0;
             data_lock(state);
+            state.sensor.ac_fan_speed = (state.sensor.ac_fan_speed + 1) % 6;
+            ac_power = state.sensor.ac_on;
+            ac_target = state.sensor.temp_target;
+            ac_fan = state.sensor.ac_fan_speed;
+            ac_swing = state.sensor.ac_swing_mode;
             state.ui_needs_update = true;
             data_unlock(state);
+            Serial.printf("[UI] AC fan speed: %u\n", ac_fan);
+            rs485_request_ac_command(ac_power, ac_target, 0, ac_fan, ac_swing);
             return;
         }
     }
@@ -2875,12 +2901,6 @@ void handle_slave_manager_touch(BuildingState& state, int tx, int ty) {
         slave_selected_index = visible_indices[0] == SLAVE_PLACEHOLDER_INDEX ? 0 : visible_indices[0];
     }
 
-    uint8_t selected_addr = 0;
-    if (visible_indices[0] != SLAVE_PLACEHOLDER_INDEX && slave_selected_index >= 0 &&
-        slave_selected_index < RS485_MAX_SLAVES) {
-        selected_addr = state.rs485.slaves[slave_selected_index].address;
-    }
-
     if (isHit(tx, ty, 350, 8, 110, 38) || isHit(tx, ty, 15, 292, 90, 24)) {
         screens_set(SCREEN_SETTINGS);
         return;
@@ -2927,27 +2947,8 @@ void handle_slave_manager_touch(BuildingState& state, int tx, int ty) {
         return;
     }
 
-    if (selected_addr != 0 && isHit(tx, ty, 260, 104, 60, 38)) {
-        if (state.rs485.pairing_candidate_ready) {
-            if (ui_callbacks.onRS485PairingAssign) ui_callbacks.onRS485PairingAssign(0);
-            return;
-        }
-        if (ui_callbacks.onRS485Test) ui_callbacks.onRS485Test(selected_addr, RS485_CMD_PING, false);
-        return;
-    }
-
     if (state.rs485.pairing_candidate_ready && isHit(tx, ty, 260, 104, 200, 38)) {
         if (ui_callbacks.onRS485PairingAssign) ui_callbacks.onRS485PairingAssign(0);
-        return;
-    }
-
-    if (!state.rs485.pairing_candidate_ready && selected_addr != 0 && isHit(tx, ty, 330, 104, 60, 38)) {
-        if (ui_callbacks.onRS485Test) ui_callbacks.onRS485Test(selected_addr, RS485_CMD_READ_SENSOR, false);
-        return;
-    }
-
-    if (!state.rs485.pairing_candidate_ready && selected_addr != 0 && isHit(tx, ty, 400, 104, 60, 38)) {
-        if (ui_callbacks.onRS485Test) ui_callbacks.onRS485Test(selected_addr, RS485_CMD_GET_INFO, false);
         return;
     }
 }
@@ -2968,9 +2969,6 @@ void handle_slave_manager_touch_event(BuildingState& state, int tx, int ty, Touc
         if (isHit(tx, ty, 350, 8, 110, 38) ||
             isHit(tx, ty, 20, 104, 112, 38) ||
             isHit(tx, ty, 144, 104, 104, 38) ||
-            isHit(tx, ty, 260, 104, 60, 38) ||
-            isHit(tx, ty, 330, 104, 60, 38) ||
-            isHit(tx, ty, 400, 104, 60, 38) ||
             isHit(tx, ty, 260, 104, 200, 38) ||
             isHit(tx, ty, 15, 292, 90, 24) ||
             isHit(tx, ty, 375, 292, 90, 24) ||
@@ -3136,7 +3134,7 @@ void handle_slave_detail_touch(BuildingState& state, int tx, int ty) {
         return;
     }
 
-    if (isHit(tx, ty, 20, 286, 96, 28)) {
+    if (isHit(tx, ty, 356, 286, 104, 28)) {
         data_lock(state);
         mapping_manager_update_locked(state);
         state.ui_needs_update = true;
@@ -3144,12 +3142,6 @@ void handle_slave_detail_touch(BuildingState& state, int tx, int ty) {
         data_save_rs485_config(state);
         rs485_apply_slave_assignments(target_index);
         screens_set(SCREEN_SLAVE_MANAGER);
-        return;
-    }
-
-    if (isHit(tx, ty, 356, 286, 104, 28)) {
-        mapping_page = 0;
-        screens_set(SCREEN_DASHBOARD_MAPPING);
         return;
     }
 }

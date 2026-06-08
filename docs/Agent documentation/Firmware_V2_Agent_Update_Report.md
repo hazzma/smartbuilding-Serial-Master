@@ -72,16 +72,16 @@ Completed:
 - [x] `docs/Flutter_App_MQTT_Requirements.md` now describes Firmware V2 as per-topic MQTT.
 - [x] Exact runtime publish topics are documented using `<class_name>/<data_type>`.
 - [x] General/simple sensor values use integer payloads.
-- [x] Temperature uses JSON for 4 fixed DHT22 positions.
-- [x] LED uses JSON for 4 ON/OFF positions.
+- [x] V2.5 update: temperature publishes integer average Celsius; older JSON-per-position wording is historical.
+- [x] V2.5 update: LED publishes integer `1` or `0`; older JSON-per-position wording is historical.
 - [x] Subscribe/control examples include LED, AC, and Projector.
 - [x] Command flow is documented as: app command -> master -> target slave -> confirmation -> republish state.
 - [x] Old single master state JSON is retained only as Legacy / V1 Notes.
 - [x] MQTT actuator state and command traffic use the same literal topic with firmware self-echo guards.
-- [x] Temperature and LED JSON examples no longer include documentation metadata as payload fields.
-- [x] AC and Projector command payloads are now documented as JSON.
+- [x] Temperature and LED scalar payload examples no longer include documentation metadata as payload fields.
+- [x] Superseded by V2.5/V2.2 draft: AC command payload is now documented as `PPTTFFSS`; Projector command payload is scalar `1` or `0`.
 - [x] Class/room naming now drives default topic labels such as `HD01/co2` and `LA2/co2`.
-- [x] MQTT QoS/retain policy is documented: simple sensors QoS 0 retain true, temperature QoS 0 retain true, LED state QoS 1 retain true, actuator commands QoS 1 retain false, master status QoS 1 retain true.
+- [x] MQTT QoS/retain policy is documented: simple sensors QoS 0 retain true, temperature average QoS 0 retain true, LED/projector state QoS 1 retain true, actuator commands QoS 1 retain false, master status QoS 1 retain true.
 
 Edited files:
 - `docs/Flutter_App_MQTT_Requirements.md`
@@ -127,8 +127,8 @@ Completed:
 - [x] Devices manages discovered MQTT masters/devices and display settings.
 - [x] Settings manages broker/topic configuration.
 - [x] App requirements consume per-topic MQTT instead of depending on a single master state JSON.
-- [x] LED sync state is defined as confirmed state from the LED JSON topic.
-- [x] Temperature UI uses fixed positions from the temperature JSON topic.
+- [x] LED sync state is defined as confirmed integer `1` or `0` from the LED topic.
+- [x] MQTT temperature UI uses the integer average from the temperature topic; fixed positions remain local master UI detail.
 - [x] UIUX dashboard input section warns that single master state JSON is Legacy / V1 only.
 - [x] Settings/Device Info now includes editable class/room name, firmware version, and `Firmware By Hansel Kay CE LAB`.
 - [x] Class/room name changes regenerate default topic labels/templates.
@@ -407,8 +407,8 @@ Slave:
 
 MQTT:
 - Simple sensor payloads are integers.
-- Temperature payload is JSON with 4 DHT22 positions.
-- LED payload is JSON with 4 ON/OFF positions.
+- Temperature payload is integer average Celsius. `-1` means no valid temperature.
+- LED payload is integer `1` or `0`.
 - Runtime topic names like `HD01/suhu` are generated from the editable
   class/room name using `<class_name>/<data_type>`.
 

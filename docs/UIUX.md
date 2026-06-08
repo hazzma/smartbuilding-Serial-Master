@@ -1070,6 +1070,17 @@ Saved registry actions:
 - Recover
 - Re-Pair
 
+Firmware V2.5 normal Slave Manager controls:
+- `DISCOVER`
+- `POLL ON` / `POLL OFF`
+- device list and device detail
+- `DELETE`
+- `SAVE`
+
+Manual `PING`, `READ`, `INFO`, and `MAP` controls are diagnostic/advanced
+functions and SHALL NOT appear in the normal UI. Dashboard mapping remains
+automatic after profile or feature changes.
+
 Action behavior:
 
 ```text
@@ -1203,8 +1214,8 @@ Firmware V2 dashboard input model:
 
 Payload handling by reference:
 - General simple sensors use integer payloads.
-- LED uses JSON payload because it carries ON/OFF state for up to 4 LED positions.
-- Temperature uses JSON payload because it carries readings for 4 DHT22 positions.
+- LED and projector use integer payloads: `1` for ON and `0` for OFF.
+- Temperature uses one integer average Celsius payload. Per-slot temperature detail remains a local dashboard/detail-screen model.
 - Full MQTT topic and payload rules live in the MQTT specification; this UI doc only defines how the app/dashboard consumes them.
 
 Example, not hardcoded values:

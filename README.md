@@ -27,14 +27,21 @@ Implementation effect:
 - Startup checks saved slave configuration first. If saved slaves exist, the master tries to reconnect them. If no saved slave exists, it stays idle until the user starts discovery.
 - MQTT publishes per data type, for example `HD01/suhu` and `HD01/co2`.
 - Simple sensor topics use integer payloads.
-- LED uses JSON because it carries ON/OFF state for 4 LED positions.
-- Temperature uses JSON because it carries 4 DHT22 readings.
-- MQTT delivery defaults are simple sensors QoS 0 retain true, temperature QoS 0 retain true, LED state QoS 1 retain true, actuator commands QoS 1 retain false, and master status QoS 1 retain true.
+- Temperature publishes one integer average Celsius value. `-1` means no valid temperature slot.
+- LED and projector publish integer `1` or `0`.
+- AC uses the compact `PPTTFFSS` payload for power, target temperature, fan speed, and swing. AC target is clamped to `16..30` degrees Celsius.
+- MQTT delivery defaults are scalar sensors QoS 0 retain true, LED/projector state QoS 1 retain true, actuator commands QoS 1 retain false, and master status QoS 1 retain true.
 - Control topics are subscribed separately, for example `HD01/led`, `HD01/ac`, and `HD01/projector`.
 - After an actuator command is confirmed by the target slave, the master republishes the related state topic so the app can synchronize.
 - Slave selection follows the v2.1 Device Profile model.
 
 ## Patch Notes
+
+### V2.6
+
+- Updates MQTT formatting for clearer per-topic payloads and improved broker command handling.
+- Updates the slave contract documentation to align V2.6 RS485 register behavior with the current master/slave protocol.
+- Enables AC swing and fan speed control in this version, with swing and fan settings supported end-to-end.
 
 ### V2.4
 
@@ -128,7 +135,7 @@ flowchart TD
     SlaveManager -->|Tap slave row| SlaveDetail[Slave Detail]
     SlaveDetail -->|Edit name| Keyboard[On-screen Keyboard]
     Keyboard -->|Save| SlaveDetail
-    SlaveDetail -->|Map| Mapping[Dashboard Mapping]
+    SlaveDetail -->|Save profile and features| SlaveManager
     Mapping -->|Pick source| SourcePicker[Mapping Source Picker]
     SourcePicker --> Mapping
     Mapping --> SlaveDetail
@@ -150,9 +157,9 @@ flowchart TD
     MQTTConnect --> Subscribe[Subscribe actuator command topics]
     MQTTConnect --> Publish[Publish per-sensor topics]
 
-    Publish --> TempTopic["Example: HD01/suhu JSON"]
+    Publish --> TempTopic["Example: HD01/suhu integer avg"]
     Publish --> CO2Topic["Example: HD01/co2 integer"]
-    Publish --> LEDTopic["Example: HD01/led JSON state"]
+    Publish --> LEDTopic["Example: HD01/led 1/0 state"]
     TempTopic --> Flutter[Flutter App Dashboard]
     CO2Topic --> Flutter
     LEDTopic --> Flutter
@@ -183,7 +190,7 @@ The current agreed slave wire contract is:
 ```mermaid
 %% EDIT_TARGET: README.md - Connectivity Flow RS485 Modbus
 %% EDIT_PURPOSE: Document Firmware V2 saved-slave reconnect and slave pairing flow
-%% EDIT_REASON: Master must reconnect saved slaves first and use the agreed v2.1 slave contract
+%% EDIT_REASON: Master must reconnect saved slaves first and use the agreed slave contract
 flowchart TD
     Boot[Boot] --> CheckSaved{Saved slave exists?}
     CheckSaved -->|Yes| TryReconnect[Try reconnect saved slave]
@@ -232,8 +239,8 @@ flowchart TD
 | CO2 | `0x0108` |
 | Presence | `0x0109..0x010C` |
 | Relay | `0x010D..0x010E` |
-| AC 1 control/status | `0x0200..0x0202`, `0x0206` |
-| AC 2 control/status | `0x0203..0x0205`, `0x0207` |
+| AC 1 control/status | `0x0200..0x0202`, `0x0206`, `0x0208..0x020A` |
+| AC 2 control/status | `0x0203..0x0205`, `0x0207`, `0x020B..0x020D` |
 | Projector control/status | `0x0210..0x0212` |
 
 Firmware V2 slave configuration effect:
@@ -291,6 +298,6 @@ Important docs:
 - Startup must check saved slave data before discovery. Saved slaves are reconnected first; if none exist, firmware does not auto-assign anything.
 - Slave firmware stays RAM-only for address/capability config; master persists MAC to address mapping.
 - Firmware V2.1 slave selection uses master-owned Device Profiles.
-- Temperature MQTT payload is JSON for 4 DHT22 readings.
-- LED MQTT payload is JSON for 4 LED ON/OFF states.
+- Temperature MQTT payload is one integer average Celsius value. `-1` means unavailable.
+- LED and projector MQTT payloads use integer `1` or `0`.
 - Simple sensor MQTT payloads use integers unless a later spec requires structured data.

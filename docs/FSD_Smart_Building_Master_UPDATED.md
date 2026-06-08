@@ -43,8 +43,11 @@ What changed:
 - MQTT publish SHALL be split per data type. Runtime topics such as `HD01/suhu`
   and `HD01/co2` are generated from the editable class/room name.
 - MQTT subscribe SHALL use actuator command topics such as LED, AC, and projector.
-- LED payload SHALL be JSON because it carries ON/OFF state for 4 LED positions.
-- Temperature payload SHALL be JSON because it carries 4 DHT22 readings.
+- LED and projector payloads SHALL be integer scalars: `1` for ON and `0` for OFF.
+- Temperature payload SHALL be one integer average Celsius value. `-1` means no valid temperature slot.
+- AC payload SHALL use the 8-digit decimal format `PPTTFFSS` for power,
+  target temperature, fan speed, and swing. AC target temperature is clamped to
+  `16..30` degrees Celsius.
 - Simple/general sensor payloads SHALL use integer payloads unless their specific spec says otherwise.
 - After an actuator command is confirmed by the target slave, the master SHALL publish the latest state again so Flutter/dashboard clients stay synchronized.
 - Slave configuration SHALL follow the v2.1 Device Profile model. Master enforces profile policy; slave remains policy-blind.
@@ -531,7 +534,8 @@ WiFi scan behavior under priority modes:
 
 ### 5.7 RS485 Slave Discovery UI Design
 
-`SCREEN_SLAVE_MANAGER` SHALL be the first UI surface for RS485 discovery, pairing, status inspection, and quick selected-slave diagnostics.
+`SCREEN_SLAVE_MANAGER` SHALL be the first UI surface for RS485 discovery,
+pairing, polling control, and device status inspection.
 
 The detailed Slave Manager layout, discovery flow, empty/default-device behavior, dashboard logical mapping, slave detail/configuration flow, and touch pagination/scroll rules SHALL be defined by:
 
@@ -546,7 +550,10 @@ This FSD only owns the system-level requirements:
 - UI SHALL NOT access UART, Modbus parser, MAX3485 direction pin, or raw register transport directly.
 - `DISCOVER` SHALL request pairing mode from RS485 Manager.
 - `POLL ON/OFF` SHALL toggle normal RS485 polling through RS485 Manager.
-- `PING`, `READ`, and `INFO` SHALL operate on the selected slave/device.
+- `PING`, `READ`, and `INFO` SHALL remain diagnostic operations available to
+  firmware/debug tooling, but SHALL NOT appear in the normal Slave Manager UI.
+- Dashboard mapping SHALL continue automatically in firmware. Manual mapping
+  screens SHALL NOT be reachable from the normal Device Detail UI.
 - Normal polling SHOULD pause while pairing is active.
 - Discovery SHALL use Modbus pairing address `247`, not unsolicited binary `PAIRING_HELLO` packets.
 - When no slave is detected/online, Slave Manager SHALL show one default empty device row with zero/empty identity.
@@ -653,6 +660,11 @@ NTP rules:
 - LAN NTP SHALL be non-blocking: send UDP request, poll response, timeout, retry.
 - LAN NTP SHALL NOT use `delay()` inside `Task_Net`.
 - LAN NTP, MQTT Ethernet client, DNS, and W5500 access SHALL remain serialized in `Task_Net`.
+- On cold boot, the clock MAY show the default `--:--` value until the first valid NTP sync.
+- After one valid WiFi/LAN NTP sync, the display clock SHALL continue updating from
+  the ESP32 internal RTC/timekeeper while WiFi, LAN, and MQTT are disconnected.
+- Offline RTC display SHALL not be treated as a fresh NTP sync; it only preserves
+  visible clock continuity until network time is available again.
 
 ### 6.4 Required RS485 State
 
@@ -802,7 +814,7 @@ MQTT broker, port, username, password, client ID, topic prefix or per-topic conf
 MQTT Setup SHALL support selecting a saved preset or creating/editing a new preset. A preset SHALL contain all connection fields and topic fields needed to reconnect without recompiling firmware.
 
 **NET-018**  
-MQTT publish behavior SHALL follow Firmware V2 per-topic publishing. Each data type SHALL publish to its own configured topic. Simple/general sensor topics SHALL use integer payloads; LED SHALL use JSON for 4 LED ON/OFF states; temperature SHALL use JSON for 4 DHT22 readings.
+MQTT publish behavior SHALL follow Firmware V2 per-topic publishing. Each data type SHALL publish to its own configured topic. Simple/general sensor topics SHALL use integer payloads; temperature SHALL publish one integer average Celsius value; LED and projector SHALL publish integer `1` or `0`; AC SHALL use `PPTTFFSS` for power, target temperature, fan speed, and swing.
 
 **NET-019**  
 MQTT subscribe behavior SHALL support actuator command topics for LED, AC, projector, and other mapped controls. Remote commands SHALL be forwarded to the target slave device. After the target slave confirms the new state, firmware SHALL publish/update the related state topic for Flutter/dashboard synchronization.
@@ -947,8 +959,10 @@ What changed:
 - Exact publish topics for class `HD01`: `HD01/suhu`, `HD01/co2`, `HD01/led`, and the other supported data-type suffixes.
 - Exact subscribe topics for class `HD01`: `HD01/led`, `HD01/ac`, `HD01/projector`.
 - Simple/general sensor payloads SHALL be integer values.
-- LED payload SHALL be JSON because it must synchronize 4 LED ON/OFF positions.
-- Temperature payload SHALL be JSON because it must carry 4 DHT22 temperature readings.
+- LED and projector payloads SHALL be integer scalars, `1` for ON and `0` for OFF.
+- Temperature payload SHALL be one integer average Celsius value. `-1` means unavailable/no valid slot.
+- AC payload SHALL use `PPTTFFSS` because it carries power, target temperature,
+  fan speed, and swing in one compact value.
 - Commands received on actuator topics SHALL be forwarded to the target slave.
 - After the slave confirms the actuator state, the master SHALL publish the updated state topic again.
 
@@ -963,7 +977,8 @@ Implementation effect:
 - Command handling must distinguish requested state from confirmed state.
 - Firmware V2.5 uses the same literal actuator topic for state and command and
   must keep its self-echo payload guards enabled.
-- The old combined JSON state payload is Legacy / V1 compatibility unless a later agent explicitly keeps it as an additional diagnostic topic.
+- The old combined JSON state payload is Legacy / V1 history only. Firmware
+  V2.5 SHALL NOT publish it periodically.
 
 ### 10.1.1 Persistent MQTT Setup
 
@@ -1036,8 +1051,8 @@ Firmware V2 SHALL use the following MQTT delivery policy unless a later team dec
 | MQTT message type | QoS | Retain | Notes |
 |---|---:|---|---|
 | Simple sensor publish | 0 | true | Integer payloads such as CO2, presence, and future simple scalar sensors. |
-| LED state publish | 1 | true | JSON payload containing 4 LED ON/OFF positions. |
-| Temperature JSON publish | 0 | true | JSON payload containing 4 DHT22 positions. |
+| LED/projector state publish | 1 | true | Integer `1` or `0` payload. |
+| Temperature average publish | 0 | true | Integer average Celsius payload. |
 | Actuator command subscribe/publish from app | 1 | false | Commands must not be retained to avoid replaying old actuator actions after reconnect. |
 | Master status publish | 1 | true | Online/status metadata for app/device discovery and last-known state. |
 
@@ -1096,17 +1111,19 @@ class `HD01`.
 
 | Example publish/state topic label | Payload rule | Purpose |
 |---|---|---|
-| `HD01/suhu` | JSON | Four DHT22 temperature readings and optional average. |
+| `HD01/suhu` | Integer | Average temperature in Celsius. `-1` means no valid temperature slot. |
 | `HD01/co2` | Integer | CO2 ppm value. |
 | `HD01/lux` | Integer | Lux value when available. |
 | `HD01/human` | Integer | Presence state such as `0` or `1`. |
-| `HD01/led` | JSON | Four LED ON/OFF states for synchronization. |
+| `HD01/led` | Integer | `1` if LED is ON, `0` if LED is OFF. |
+| `HD01/projector` | Integer | `1` if projector is ON, `0` if projector is OFF. |
+| `HD01/ac` | 8-digit integer string | AC `PPTTFFSS`: power, target temperature, fan speed, and swing. Target temperature is clamped to `16..30` degrees Celsius. |
 
 What changed: this replaces the previous single combined state JSON as the primary MQTT requirement.
 
 Why it changed: each app screen or dashboard widget can subscribe only to the data it displays.
 
-Implementation effect: firmware must publish simple sensors as integers and structured multi-position data as JSON.
+Implementation effect: firmware must publish simple sensors, temperature average, LED state, and projector state as integers; AC uses `PPTTFFSS` for multi-field control state.
 
 Direction rule: Firmware V2.5 uses the same literal actuator topic for state
 publish and command subscribe. Firmware SHALL ignore its own state payload
@@ -1114,7 +1131,8 @@ shapes in the command handler to avoid self-echo loops.
 
 ### 10.1.4.1 Legacy / V1 Combined State JSON
 
-The following combined JSON shape is Legacy / V1 compatibility. It MAY remain as an optional diagnostic or transition topic, but it SHALL NOT be the primary Firmware V2 app contract.
+The following combined JSON shape is Legacy / V1 history only. Firmware V2.5
+does not publish this payload periodically.
 
 ```json
 {
@@ -1204,26 +1222,26 @@ runtime template `<class_name>/<data_type>`.
 
 | Example subscribe/command topic label | Command payload rule | Behavior |
 |---|---|---|
-| `HD01/led` | JSON command | Forward LED command to target slave, wait for confirmation, publish LED JSON state. |
-| `HD01/ac` | JSON command | Forward AC command to target slave, wait for confirmation, publish latest AC state. |
-| `HD01/projector` | JSON command | Forward projector command to target slave, wait for confirmation, publish latest projector state. |
+| `HD01/led` | Integer command | Forward LED command to target slave, wait for confirmation, publish LED integer state. |
+| `HD01/ac` | `PPTTFFSS` command | Forward AC command to target slave, wait for confirmation, publish latest AC state. |
+| `HD01/projector` | Integer command | Forward projector command to target slave, wait for confirmation, publish latest projector integer state. |
 
 What changed: command handling is topic-based and confirmation-based.
 
 Why it changed: the dashboard must show actual confirmed actuator state, not only the requested state.
 
-Implementation effect: MQTT command handling needs JSON parsing for LED, AC, and Projector commands, plus an RS485/control acknowledgement path before republishing synchronized state.
+Implementation effect: MQTT command handling needs scalar parsing for LED and Projector, `PPTTFFSS` parsing for AC, and an RS485/control acknowledgement path before republishing synchronized state.
 
-What changed: AC and Projector command payloads are now JSON, not an open text-vs-JSON choice.
+What changed: AC command payload is the 8-digit decimal format `PPTTFFSS`, while LED and Projector commands are scalar `1` or `0`.
 
-Why it changed: JSON keeps actuator commands extensible for fields such as `power`, `target_c`, `mode`, and `input`.
+Why it changed: AC needs power, target temperature, fan speed, and swing while still staying compact for MQTT/mobile parsing; LED and Projector only need ON/OFF.
 
-Implementation effect: firmware and Flutter agents SHALL implement AC/Projector command parsing as JSON.
+Implementation effect: firmware and Flutter agents SHALL implement AC command parsing as `PPTTFFSS` and LED/Projector command parsing as integer ON/OFF.
 
 Temporary AC implementation note:
 - The dashboard/control panel SHALL keep a single AC control surface for now.
-- If the selected IR-capable slave exposes both AC 1 and AC 2 under the v2.1 slave contract, the master SHALL mirror the same AC command values to AC 1 and AC 2.
-- Mirrored fields include power, set temperature, and mode.
+- If the selected IR-capable slave exposes both AC 1 and AC 2 under the v2.2 draft slave contract, the master SHALL mirror the same AC command values to AC 1 and AC 2.
+- Mirrored fields include power, set temperature, mode, fan speed, and swing.
 - Separate AC 1 / AC 2 control surfaces are a future UI update and SHALL NOT be required for the current control panel.
 
 ### 10.1.5.1 Legacy / V1 Combined Command JSON
@@ -1719,8 +1737,8 @@ RS485 Bus / MAX3485
            Sensor/state block 0x0100..0x010E
          Control writes:
            Relay              0x010D..0x010E
-           AC 1               0x0200..0x0202
-           AC 2               0x0203..0x0205
+           AC 1               0x0200..0x0202, 0x0206, 0x0208..0x020A
+           AC 2               0x0203..0x0205, 0x0207, 0x020B..0x020D
            AC status          0x0206..0x0207
            Projector          0x0210..0x0212
 ```
@@ -1798,6 +1816,12 @@ The following constants mirror `docs/From_SLave/RS485_Modbus_Slave_Firmware_Cont
 #define REG_AC_2_MODE                 0x0205
 #define REG_AC_1_COMMAND_STATUS       0x0206
 #define REG_AC_2_COMMAND_STATUS       0x0207
+#define REG_AC_1_FAN_SPEED            0x0208
+#define REG_AC_1_SWING_VERTICAL       0x0209
+#define REG_AC_1_SWING_HORIZONTAL     0x020A
+#define REG_AC_2_FAN_SPEED            0x020B
+#define REG_AC_2_SWING_VERTICAL       0x020C
+#define REG_AC_2_SWING_HORIZONTAL     0x020D
 #define REG_PROJECTOR_POWER           0x0210
 #define REG_PROJECTOR_INPUT           0x0211
 #define REG_PROJECTOR_COMMAND_STATUS  0x0212
@@ -1929,7 +1953,8 @@ System-level requirements:
 - WiFi Setup SHALL populate SSID and password from the last saved `wifi_cfg` credentials whenever the screen is opened.
 - WiFi Scan SHALL present selectable SSID rows with touch scrolling; scan logic remains asynchronous as specified in section 5.5.
 - LAN Setup SHALL expose DHCP/STATIC mode, current link/status, editable static IPv4 fields, and save action using large touch targets.
-- Slave Manager SHALL remain the entry point for discovery, pairing, polling, diagnostics, and detail/mapping navigation.
+- Slave Manager SHALL remain the entry point for discovery, pairing, polling,
+  device list, and device detail navigation.
 - Settings Page 2 SHALL open dedicated MQTT Setup and Device Info screens. MQTT connection fields and device identity fields SHALL be saved dynamically to NVS/Preferences.
 - Editing class/room name in Settings Page 2 SHALL update default MQTT topic labels generated by the class template, for example `HD01/co2` or `LA2/co2`.
 

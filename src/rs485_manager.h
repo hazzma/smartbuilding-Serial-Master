@@ -62,6 +62,12 @@
 #define RS485_MODBUS_REG_AC_2_MODE         0x0205
 #define RS485_MODBUS_REG_AC_1_COMMAND_STATUS 0x0206
 #define RS485_MODBUS_REG_AC_2_COMMAND_STATUS 0x0207
+#define RS485_MODBUS_REG_AC_1_FAN_SPEED    0x0208
+#define RS485_MODBUS_REG_AC_1_SWING_VERTICAL 0x0209
+#define RS485_MODBUS_REG_AC_1_SWING_HORIZONTAL 0x020A
+#define RS485_MODBUS_REG_AC_2_FAN_SPEED    0x020B
+#define RS485_MODBUS_REG_AC_2_SWING_VERTICAL 0x020C
+#define RS485_MODBUS_REG_AC_2_SWING_HORIZONTAL 0x020D
 #define RS485_MODBUS_REG_PROJECTOR_POWER   0x0210
 #define RS485_MODBUS_REG_PROJECTOR_INPUT   0x0211
 #define RS485_MODBUS_REG_PROJECTOR_COMMAND_STATUS 0x0212
@@ -154,7 +160,7 @@ void rs485_set_poll_enabled(bool enabled);
 void rs485_request_test(uint8_t address, uint8_t cmd, bool write_command);
 bool rs485_apply_slave_assignments(uint8_t slave_index);
 void rs485_request_light_command(bool on);
-void rs485_request_ac_command(bool power, float target_c, uint8_t mode = 0);
+void rs485_request_ac_command(bool power, float target_c, uint8_t mode = 0, uint8_t fan_speed = 0, uint8_t swing_mode = 0);
 void rs485_request_projector_command(bool power, uint8_t input = 0);
 
 #endif

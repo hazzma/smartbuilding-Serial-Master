@@ -75,6 +75,8 @@ void data_load_dummy(BuildingState& state) {
         state.sensor.lux = -1.0f;
         state.sensor.co2 = -1;
         state.sensor.ac_on = true;
+        state.sensor.ac_fan_speed = 0;
+        state.sensor.ac_swing_mode = 0;
         state.sensor.projector_on = false;
         state.sensor.light_on = true;
         state.sensor.human_presence = true;
@@ -169,6 +171,8 @@ void data_load_dummy(BuildingState& state) {
         state.rs485.ac_command_power = false;
         state.rs485.ac_command_target_c = state.sensor.temp_target;
         state.rs485.ac_command_mode = 0;
+        state.rs485.ac_command_fan_speed = state.sensor.ac_fan_speed;
+        state.rs485.ac_command_swing_mode = state.sensor.ac_swing_mode;
         state.rs485.projector_command_requested = false;
         state.rs485.projector_command_power = false;
         state.rs485.projector_command_input = 0;

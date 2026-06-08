@@ -19,6 +19,8 @@ static uint32_t lan_ntp_sent_ms = 0;
 static uint32_t last_lan_sync_attempt_ms = 0;
 static uint32_t last_success_ms = 0;
 static uint8_t lan_ntp_fail_count = 0;
+static bool wifi_ntp_started = false;
+static bool rtc_time_valid = false;
 
 static const uint32_t LAN_NTP_RESPONSE_TIMEOUT_MS = 1500;
 static const uint32_t LAN_NTP_RETRY_MS = 15000;
@@ -39,21 +41,36 @@ static void time_set_status(const char* status, const char* source, bool syncing
 static bool time_update_display_string(const char* source) {
     struct tm timeinfo;
     if (!getLocalTime(&timeinfo, 5)) return false;
+    if (timeinfo.tm_year < (2024 - 1900)) return false;
 
+    char next_time[16];
+    strftime(next_time, sizeof(next_time), "%H:%M", &timeinfo);
+
+    const bool rtc_source = strcmp(source, "RTC") == 0;
     data_lock(g_state);
-    strftime(g_state.net.time_str, sizeof(g_state.net.time_str), "%H:%M", &timeinfo);
+    bool changed = strcmp(g_state.net.time_str, next_time) != 0 ||
+                   !g_state.net.time_synced ||
+                   strcmp(g_state.net.time_source, source) != 0;
+    strncpy(g_state.net.time_str, next_time, sizeof(g_state.net.time_str) - 1);
+    g_state.net.time_str[sizeof(g_state.net.time_str) - 1] = '\0';
     g_state.net.time_synced = true;
     g_state.net.time_syncing = false;
     strncpy(g_state.net.time_source, source, sizeof(g_state.net.time_source) - 1);
     g_state.net.time_source[sizeof(g_state.net.time_source) - 1] = '\0';
-    strncpy(g_state.net.time_status, "Time synced", sizeof(g_state.net.time_status) - 1);
+    strncpy(g_state.net.time_status,
+            rtc_source ? "RTC running" : "Time synced",
+            sizeof(g_state.net.time_status) - 1);
     g_state.net.time_status[sizeof(g_state.net.time_status) - 1] = '\0';
+    if (changed) g_state.ui_needs_update = true;
     data_unlock(g_state);
+    rtc_time_valid = true;
     return true;
 }
 
 void time_manager_init() {
     configTime(7 * 3600, 0, ntpServer);
+    wifi_ntp_started = false;
+    rtc_time_valid = false;
     time_set_status("Waiting for NTP", "-", false, false);
 }
 
@@ -146,12 +163,26 @@ void time_manager_update() {
     bool wifi_connected = WiFi.status() == WL_CONNECTED;
     bool lan_connected = Ethernet.linkStatus() == LinkON;
 
+    if (!wifi_connected) {
+        wifi_ntp_started = false;
+    }
+
+    if (wifi_connected && !wifi_ntp_started) {
+        wifi_ntp_started = true;
+        configTime(7 * 3600, 0, ntpServer);
+        time_set_status("WiFi NTP waiting", "WiFi", true, false);
+        Serial.println("[TIME] WiFi NTP start");
+    }
+
     if (wifi_connected && time_update_display_string("WiFi")) {
         last_success_ms = millis();
         return;
     }
 
     if (!lan_connected) {
+        if (rtc_time_valid) {
+            time_update_display_string("RTC");
+        }
         return;
     }
 
@@ -165,6 +196,8 @@ void time_manager_update() {
     }
 
     if (!wifi_connected) {
-        time_update_display_string("LAN");
+        if (!time_update_display_string("LAN") && rtc_time_valid) {
+            time_update_display_string("RTC");
+        }
     }
 }

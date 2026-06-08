@@ -1,12 +1,12 @@
 # RS485 Modbus Slave Firmware Contract
 
-Version: v2.1.0
+Version: v2.2.0-draft
 
 ## Purpose
 
 Dokumen ini adalah kontrak implementasi firmware slave untuk Smart Building RS485 Modbus.
 
-Tujuan v2.1.0:
+Tujuan v2.2.0-draft:
 
 - Merapikan inkonsistensi register v2.0.1.
 - Menetapkan recovery mechanism final.
@@ -14,6 +14,7 @@ Tujuan v2.1.0:
 - Menetapkan capability policy final.
 - Menambahkan production-oriented device profile model.
 - Menyesuaikan desain dengan implementasi Smart Building Binus deployment.
+- Menambahkan register AC fan speed dan swing/vane untuk IR AC control.
 
 Master firmware memakai:
 
@@ -159,7 +160,7 @@ int16_t temp_x10 = (int16_t)holding_register[0x0100];
 
 ## Register Map
 
-Only this register map is valid for v2.1.0. Tables, header definitions, recovery documentation, and changelog SHALL use the same numbering.
+Only this register map is valid for v2.2.0-draft. Tables, header definitions, recovery documentation, and changelog SHALL use the same numbering.
 
 ### Identity Registers
 
@@ -286,21 +287,65 @@ If a value matches "sensor not assigned", master should ignore it. If a value ma
 
 AC 1:
 
-| Register | Name                  | Access | Values                                         |
-| -------- | --------------------- | ------ | ---------------------------------------------- |
-| `0x0200` | `AC_1_POWER`          | R/W    | `0` off, `1` on                                |
-| `0x0201` | `AC_1_SET_TEMP`       | R/W    | Celsius x10, `160..300`, step `10`             |
-| `0x0202` | `AC_1_MODE`           | R/W    | `0` cool, `1` dry, `2` fan, `3` heat, `4` auto |
-| `0x0206` | `AC_1_COMMAND_STATUS` | R      | `0` idle, `1` success, `2` busy, `3` failed    |
+| Register | Name                    | Access | Values                                         |
+| -------- | ----------------------- | ------ | ---------------------------------------------- |
+| `0x0200` | `AC_1_POWER`            | R/W    | `0` off, `1` on                                |
+| `0x0201` | `AC_1_SET_TEMP`         | R/W    | Celsius x10, `160..300`, step `10`             |
+| `0x0202` | `AC_1_MODE`             | R/W    | `0` cool, `1` dry, `2` fan, `3` heat, `4` auto |
+| `0x0206` | `AC_1_COMMAND_STATUS`   | R      | `0` idle, `1` success, `2` busy, `3` failed    |
+| `0x0208` | `AC_1_FAN_SPEED`        | R/W    | Fan speed enum below                           |
+| `0x0209` | `AC_1_SWING_VERTICAL`   | R/W    | Swing/vertical vane enum below                 |
+| `0x020A` | `AC_1_SWING_HORIZONTAL` | R/W    | Optional horizontal vane enum below            |
 
 AC 2:
 
-| Register | Name                  | Access | Values                                         |
-| -------- | --------------------- | ------ | ---------------------------------------------- |
-| `0x0203` | `AC_2_POWER`          | R/W    | `0` off, `1` on                                |
-| `0x0204` | `AC_2_SET_TEMP`       | R/W    | Celsius x10, `160..300`, step `10`             |
-| `0x0205` | `AC_2_MODE`           | R/W    | `0` cool, `1` dry, `2` fan, `3` heat, `4` auto |
-| `0x0207` | `AC_2_COMMAND_STATUS` | R      | `0` idle, `1` success, `2` busy, `3` failed    |
+| Register | Name                    | Access | Values                                         |
+| -------- | ----------------------- | ------ | ---------------------------------------------- |
+| `0x0203` | `AC_2_POWER`            | R/W    | `0` off, `1` on                                |
+| `0x0204` | `AC_2_SET_TEMP`         | R/W    | Celsius x10, `160..300`, step `10`             |
+| `0x0205` | `AC_2_MODE`             | R/W    | `0` cool, `1` dry, `2` fan, `3` heat, `4` auto |
+| `0x0207` | `AC_2_COMMAND_STATUS`   | R      | `0` idle, `1` success, `2` busy, `3` failed    |
+| `0x020B` | `AC_2_FAN_SPEED`        | R/W    | Fan speed enum below                           |
+| `0x020C` | `AC_2_SWING_VERTICAL`   | R/W    | Swing/vertical vane enum below                 |
+| `0x020D` | `AC_2_SWING_HORIZONTAL` | R/W    | Optional horizontal vane enum below            |
+
+AC fan speed enum:
+
+| Value | Meaning |
+| ----- | ------- |
+| `0`   | Auto |
+| `1`   | Low |
+| `2`   | Medium |
+| `3`   | High |
+| `4`   | Quiet/Silent |
+| `5`   | Turbo/Powerful |
+| `6..98` | Reserved |
+| `99`  | No change / unsupported |
+
+AC swing/vertical vane enum:
+
+| Value | Meaning |
+| ----- | ------- |
+| `0`   | Off / fixed |
+| `1`   | Auto swing |
+| `2`   | Up |
+| `3`   | Mid-up |
+| `4`   | Middle |
+| `5`   | Mid-down |
+| `6`   | Down |
+| `7`   | Step next |
+| `8`   | Step previous |
+| `9`   | Auto comfort |
+| `10`  | Auto powerful |
+| `11..98` | Reserved |
+| `99`  | No change / unsupported |
+
+AC horizontal vane enum:
+
+- Uses the same values as vertical vane when the AC IR protocol supports
+  horizontal vane control.
+- If the AC/protocol does not support horizontal vane control, slave SHALL
+  accept `0` or `99` and SHALL ignore other values safely.
 
 Projector:
 
@@ -607,6 +652,12 @@ Modbus exception mapping:
 #define REG_AC_2_MODE                 0x0205
 #define REG_AC_1_COMMAND_STATUS       0x0206
 #define REG_AC_2_COMMAND_STATUS       0x0207
+#define REG_AC_1_FAN_SPEED            0x0208
+#define REG_AC_1_SWING_VERTICAL       0x0209
+#define REG_AC_1_SWING_HORIZONTAL     0x020A
+#define REG_AC_2_FAN_SPEED            0x020B
+#define REG_AC_2_SWING_VERTICAL       0x020C
+#define REG_AC_2_SWING_HORIZONTAL     0x020D
 #define REG_PROJECTOR_POWER           0x0210
 #define REG_PROJECTOR_INPUT           0x0211
 #define REG_PROJECTOR_COMMAND_STATUS  0x0212
@@ -655,7 +706,7 @@ Read 0x0000 length 5      identity
 Read 0x0010 length 8      capability assignment/count registers
 Read 0x0100 length 15     sensors/actuator state block
 Write 0x010D / 0x010E     relay controls when profile/assignment allows
-Write 0x0200..0x0205      AC controls when IR_COMBO_NODE profile allows
+Write 0x0200..0x020D      AC controls when IR_COMBO_NODE profile allows
 Write 0x0210..0x0211      projector controls when IR_COMBO_NODE profile allows
 ```
 

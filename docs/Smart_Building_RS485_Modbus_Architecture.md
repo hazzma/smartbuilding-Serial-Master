@@ -573,7 +573,9 @@ Current firmware control implementation status:
 ```text
 Implemented/target active write paths SHALL route through RS485 Manager and the v2.1 register map:
 - Relay writes use 0x010D..0x010E.
-- AC writes use 0x0200..0x0205 when IR_COMBO_NODE is assigned.
+- AC writes use 0x0200..0x020D when IR_COMBO_NODE is assigned. The extension
+  includes power, set temperature, mode, fan speed, vertical swing, and optional
+  horizontal swing for AC 1 and AC 2.
 - Projector writes use 0x0210..0x0211 when IR_COMBO_NODE is assigned.
 
 Command status read paths:

@@ -158,6 +158,8 @@ struct RS485State {
     bool ac_command_power;
     float ac_command_target_c;
     uint8_t ac_command_mode;
+    uint8_t ac_command_fan_speed;
+    uint8_t ac_command_swing_mode;
     bool projector_command_requested;
     bool projector_command_power;
     uint8_t projector_command_input;
@@ -182,6 +184,8 @@ struct SensorData {
     float    lux;
     int      co2;
     bool     ac_on;
+    uint8_t  ac_fan_speed;
+    uint8_t  ac_swing_mode;
     bool     projector_on;
     bool     light_on;
     bool     human_presence;

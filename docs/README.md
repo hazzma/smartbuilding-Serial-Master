@@ -16,12 +16,12 @@ Important Firmware V2 rules:
 - Discovery/pairing is for new or recovered slaves, not a mandatory assignment step on every boot.
 - MQTT publishes each data type using the exact V2.5 runtime template
   `<class_name>/<data_type>`, for example `HD01/suhu` and `HD01/co2`.
-- Simple sensor payloads use integers. Temperature uses JSON for 4 DHT22 readings. LED uses JSON for 4 LED ON/OFF positions.
+- Simple sensor payloads use integers. Temperature uses one integer average Celsius value. LED and projector use integer `1` or `0`. AC uses `PPTTFFSS`.
 - MQTT subscribes to actuator control topics such as LED, AC, and projector. After the target slave confirms the new state, the master republishes the related state topic for app synchronization.
-- MQTT QoS/retain defaults: simple sensors QoS 0 retain true; temperature JSON QoS 0 retain true; LED state QoS 1 retain true; actuator commands QoS 1 retain false; master status QoS 1 retain true.
+- MQTT QoS/retain defaults: simple sensors QoS 0 retain true; temperature average QoS 0 retain true; LED/projector state QoS 1 retain true; actuator commands QoS 1 retain false; master status QoS 1 retain true.
 - Slave Detail selection follows the master-owned Device Profile model.
 - Device profiles include `TEMP_NODE`, `PRESENCE_NODE`, `CO2_NODE`, `RELAY_NODE`, and `IR_COMBO_NODE`; slave firmware remains policy-blind.
-- Slave capability/config follows the agreed v2.1 contract: capability registers live at `0x0010..0x0017`, address assignment uses `0x0000`, and recovery uses `0x00F4..0x00F7`.
+- Slave capability/config follows the agreed contract: capability registers live at `0x0010..0x0017`, address assignment uses `0x0000`, recovery uses `0x00F4..0x00F7`, and AC control uses `0x0200..0x020D`.
 
 Documentation change intent:
 
