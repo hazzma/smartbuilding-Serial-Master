@@ -92,6 +92,7 @@ void data_load_dummy(BuildingState& state) {
         memset(state.sensor.proj_lux_baseline, 0, sizeof(state.sensor.proj_lux_baseline));
         memset(state.sensor.proj_lux_baseline_channel_valid, 0, sizeof(state.sensor.proj_lux_baseline_channel_valid));
         state.sensor.proj_warmup_timer_ms = 0;
+        state.sensor.proj_warning_until_ms = 0;
         state.sensor.proj_retry_count = 0;
         state.sensor.proj_hardware_failed = false;
 

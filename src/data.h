@@ -209,6 +209,7 @@ struct SensorData {
     float    proj_lux_baseline[4];
     bool     proj_lux_baseline_channel_valid[4];
     uint32_t proj_warmup_timer_ms;
+    uint32_t proj_warning_until_ms;
     uint8_t  proj_retry_count;
     bool     proj_hardware_failed;
 

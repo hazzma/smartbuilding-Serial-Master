@@ -1752,6 +1752,7 @@ void rs485_request_projector_command(bool power, uint8_t input) {
             }
         }
         g_state.sensor.projector_on = true;
+        g_state.sensor.proj_warning_until_ms = 0;
         if (!baseline_available) {
             g_state.sensor.proj_verif_state = 4; // NO_LUX
             g_state.sensor.proj_hardware_failed = false;
@@ -1765,6 +1766,7 @@ void rs485_request_projector_command(bool power, uint8_t input) {
         g_state.sensor.projector_on = false;
         g_state.sensor.proj_verif_state = 0; // OFF
         g_state.sensor.proj_hardware_failed = false;
+        g_state.sensor.proj_warning_until_ms = 0;
         g_state.sensor.proj_retry_count = 0;
     }
 
@@ -2510,6 +2512,15 @@ static void rs485_handle_projector_verification() {
         }
     }
 
+    if (g_state.sensor.proj_verif_state == 6 &&
+        g_state.sensor.proj_warning_until_ms != 0 &&
+        (int32_t)(millis() - g_state.sensor.proj_warning_until_ms) >= 0) {
+        g_state.sensor.proj_verif_state = 2; // VERIFIED_ON visual state after warning timeout
+        g_state.sensor.proj_hardware_failed = false;
+        g_state.sensor.proj_warning_until_ms = 0;
+        g_state.ui_needs_update = true;
+    }
+
     if (g_state.sensor.proj_verif_state == 1 || g_state.sensor.proj_verif_state == 3) {
         ProjectorLuxEval eval = rs485_projector_eval_lux_locked();
         if (eval.baseline_channels == 0 || eval.current_channels == 0) {
@@ -2561,6 +2572,7 @@ static void rs485_handle_projector_verification() {
                 g_state.sensor.proj_verif_state = 6; // CHECK_PROJECTOR
                 g_state.sensor.proj_hardware_failed = true;
                 g_state.sensor.projector_on = true;
+                g_state.sensor.proj_warning_until_ms = millis() + 10000;
                 g_state.ui_needs_update = true;
 
                 Serial.println("[Projector] Verification failed after retry. Keeping ON with CHECK_PROJECTOR warning.");
