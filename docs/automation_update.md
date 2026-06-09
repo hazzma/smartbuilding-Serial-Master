@@ -4,6 +4,20 @@ This document details the system design, logical changes, and documentation impa
 
 ---
 
+## V2.8 Planning Reference
+
+The next polling, MQTT timing, Lux classification, Lux outlier, occupancy
+override, and local daily schedule-engine plan is defined in
+`docs/V2.8_Planning.md`.
+
+Important current schedule status:
+
+- `PRE_CLASS_ON` and `CLASS_ENDED` event handling is implemented.
+- Daily payload parsing, overwrite, NVS persistence, and automatic local slot
+  execution are planned but not implemented yet.
+
+---
+
 ## V2.7.1 Checkpoint
 
 V2.7.1 is a documentation checkpoint for tightening the V2.7 automation logic

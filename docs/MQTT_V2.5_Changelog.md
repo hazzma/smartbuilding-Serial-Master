@@ -78,6 +78,10 @@ resets slot trigger flags. Example: `20260609;0800-0930;1015-1200`. This lets
 the server push one daily schedule around midnight while the master executes the
 day locally if server/MQTT availability becomes unstable later.
 
+Current implementation checkpoint: `PRE_CLASS_ON` and `CLASS_ENDED` are active.
+Daily payload parsing, persistence, and automatic local schedule execution are
+planned for V2.8 and are not implemented yet. See `docs/V2.8_Planning.md`.
+
 ### Alert Decimal Bitmask
 
 `HD01/data/alert` publishes one decimal integer. Each bit means:

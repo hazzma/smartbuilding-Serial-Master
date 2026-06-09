@@ -38,6 +38,14 @@ Implementation effect:
 
 ## Patch Notes
 
+### V2.8 Planning
+
+- Defines recommended RS485 polling and MQTT publish intervals, including temperature burst mode after AC ON, delayed Lux updates after lamp changes, event-driven state publishing, and 5-minute heartbeats.
+- Plans logical separation between room Lux, projector-verification Lux, and Lux outlier detection while keeping the existing 5-7 day active-load anomaly.
+- Keeps master authority over lamp commands while a room is confirmed occupied.
+- Plans the local daily schedule engine. Current firmware already handles `PRE_CLASS_ON` and `CLASS_ENDED`, but daily `YYYYMMDD;HHMM-HHMM;...` parsing, persistence, and automatic local slot execution are not implemented yet.
+- Full planning details: `docs/V2.8_Planning.md`.
+
 ### V2.7.1
 
 - **Projector Adaptive Verification Target**: Refines the V2.7 projector check from a fixed Lux delta into an adaptive per-channel baseline algorithm. While the projector is OFF and one or more Lux channels are valid, the master learns the room ambient baseline per channel. When Projector ON is requested, it compares each post-warmup Lux channel against its own baseline using a hybrid threshold such as `max(20 lx, min(80 lx, baseline * 0.20))` plus a ratio guard. If no BH1750/Lux channel is installed or valid, the command still behaves as normal IR ON/OFF and is marked `NO LUX`, not failed.

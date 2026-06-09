@@ -38,6 +38,12 @@ Sistem dirancang modular, dengan pemisahan tanggung jawab yang ketat antar modul
 
 Firmware V2 updates the system contract around three simple ideas: saved-slave reconnect on startup, per-sensor MQTT topics, and master-owned device profile assignment.
 
+V2.8 planning note: recommended polling/publish timing, room-vs-projector Lux
+classification, Lux outlier detection, and the planned local daily schedule
+engine are documented in `docs/V2.8_Planning.md`. At the current implementation
+checkpoint, `PRE_CLASS_ON` and `CLASS_ENDED` work, but daily schedule parsing and
+automatic local slot execution are not yet implemented.
+
 What changed:
 - Startup SHALL check saved slave configuration first. If saved slave data exists, the master SHALL try to reconnect those slaves. If no saved slave data exists, the master SHALL do nothing until the user starts discovery.
 - MQTT publish SHALL be split per data type. Runtime topics such as

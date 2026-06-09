@@ -244,6 +244,13 @@ behavior is to publish the full daily schedule around midnight so the master can
 execute pre-class and class-ended actions locally even if server availability is
 unstable later in the day.
 
+Implementation checkpoint:
+- `PRE_CLASS_ON` and `CLASS_ENDED` are implemented.
+- Daily payload parsing, persistence, and automatic local slot execution are
+  planned for V2.8 and are not implemented yet.
+- Recommended sensor polling and MQTT publish timing is documented in
+  `docs/V2.8_Planning.md`.
+
 Command flow:
 1. Flutter app or server publishes actuator command to the selected class/room `control` topic.
 2. Master receives the MQTT command.
