@@ -98,6 +98,9 @@ void data_load_dummy(BuildingState& state) {
 
         state.sensor.sched_shutdown_active = false;
         state.sensor.sched_shutdown_timer_ms = 0;
+        state.sensor.schedule_date_yyyymmdd = 0;
+        state.sensor.schedule_slot_count = 0;
+        memset(state.sensor.schedule_slots, 0, sizeof(state.sensor.schedule_slots));
 
         state.sensor.light_on_start_ms = 0;
         state.sensor.light_accum_sec_today = 0;
@@ -188,6 +191,7 @@ void data_load_dummy(BuildingState& state) {
         state.rs485.test_ok = false;
         state.rs485.light_command_requested = false;
         state.rs485.light_command_on = false;
+        state.rs485.light_command_channel = 0;
         state.rs485.ac_command_requested = false;
         state.rs485.ac_command_power = false;
         state.rs485.ac_command_target_c = state.sensor.temp_target;
@@ -293,6 +297,20 @@ void data_load_device_config(BuildingState& state) {
         snprintf(key, sizeof(key), "l_hist_%d", i);
         state.sensor.light_history_min[i] = prefs.getUShort(key, 0);
     }
+    state.sensor.schedule_date_yyyymmdd = prefs.getUInt("sched_date", 0);
+    state.sensor.schedule_slot_count = prefs.getUChar("sched_count", 0);
+    if (state.sensor.schedule_slot_count > DAILY_SCHEDULE_MAX_SLOTS) {
+        state.sensor.schedule_slot_count = 0;
+    }
+    for (uint8_t i = 0; i < DAILY_SCHEDULE_MAX_SLOTS; i++) {
+        char key[16];
+        snprintf(key, sizeof(key), "sched_s%u", i);
+        state.sensor.schedule_slots[i].start_min = prefs.getUShort(key, 0);
+        snprintf(key, sizeof(key), "sched_e%u", i);
+        state.sensor.schedule_slots[i].end_min = prefs.getUShort(key, 0);
+        state.sensor.schedule_slots[i].pre_triggered = false;
+        state.sensor.schedule_slots[i].end_triggered = false;
+    }
 
     state.ui_needs_update = true;
     data_unlock(state);
@@ -321,6 +339,15 @@ void data_save_device_config(BuildingState& state) {
         char key[16];
         snprintf(key, sizeof(key), "l_hist_%d", i);
         prefs.putUShort(key, state.sensor.light_history_min[i]);
+    }
+    prefs.putUInt("sched_date", state.sensor.schedule_date_yyyymmdd);
+    prefs.putUChar("sched_count", state.sensor.schedule_slot_count);
+    for (uint8_t i = 0; i < DAILY_SCHEDULE_MAX_SLOTS; i++) {
+        char key[16];
+        snprintf(key, sizeof(key), "sched_s%u", i);
+        prefs.putUShort(key, state.sensor.schedule_slots[i].start_min);
+        snprintf(key, sizeof(key), "sched_e%u", i);
+        prefs.putUShort(key, state.sensor.schedule_slots[i].end_min);
     }
 
     data_unlock(state);

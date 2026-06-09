@@ -20,7 +20,11 @@ const char* mqtt_topic_sub    = MQTT_TOPIC_SUB_DEFAULT;
 const char* mqtt_topic_pub    = MQTT_TOPIC_PUB_DEFAULT;
 const char* mqtt_device_name  = MQTT_DEVICE_NAME_DEFAULT;
 const char* mqtt_fw_version   = MQTT_FW_VERSION_DEFAULT;
-const uint32_t mqtt_publish_interval_ms = MQTT_PUBLISH_INTERVAL_MS;
+static const uint32_t MQTT_HEARTBEAT_INTERVAL_MS = 5UL * 60UL * 1000UL;
+static const uint32_t MQTT_RUNTIME_CHECK_INTERVAL_MS = 1000;
+static const uint32_t MQTT_TEMP_BURST_INTERVAL_MS = 5000;
+static const uint32_t MQTT_TEMP_BURST_DURATION_MS = 5UL * 60UL * 1000UL;
+static const uint32_t MQTT_LUX_AFTER_LIGHT_DELAY_MS = 5000;
 
 WiFiClientSecure secureClient;
 WiFiClient       wifiClient;
@@ -49,6 +53,19 @@ enum MqttTopicKind : uint8_t {
     MQTT_TOPIC_ACTIVE,
     MQTT_TOPIC_MASTER,
     MQTT_TOPIC_SCHEDULE
+};
+
+enum MqttPublishFlag : uint16_t {
+    MQTT_PUBLISH_TEMP      = (1 << 0),
+    MQTT_PUBLISH_CO2       = (1 << 1),
+    MQTT_PUBLISH_LUX       = (1 << 2),
+    MQTT_PUBLISH_HUMAN     = (1 << 3),
+    MQTT_PUBLISH_LED       = (1 << 4),
+    MQTT_PUBLISH_AC        = (1 << 5),
+    MQTT_PUBLISH_PROJECTOR = (1 << 6),
+    MQTT_PUBLISH_ALERT     = (1 << 7),
+    MQTT_PUBLISH_ACTIVE    = (1 << 8),
+    MQTT_PUBLISH_ALL       = 0x01FF
 };
 
 static const char* mqtt_class_name_locked() {
@@ -391,7 +408,8 @@ static void mqtt_publish_legacy_state() {
                   (unsigned)payload_len);
 }
 
-static void mqtt_publish_v2_state() {
+static void mqtt_publish_v2_state(uint16_t flags) {
+    if (!mqttClient.connected() || flags == 0) return;
     char topic_temp[64];
     char topic_co2[48];
     char topic_lux[48];
@@ -481,19 +499,97 @@ static void mqtt_publish_v2_state() {
 
     data_unlock(g_state);
 
-    mqtt_publish_raw(topic_temp, temp_payload, true, "temperature");
-    mqtt_publish_raw(topic_co2, co2_payload, true, "co2");
-    mqtt_publish_raw(topic_lux, lux_payload, true, "lux");
-    mqtt_publish_raw(topic_human, human_payload, true, "human");
-    mqtt_publish_raw(topic_led, led_payload, true, "led");
-    mqtt_publish_raw(topic_ac, ac_payload, true, "ac");
-    mqtt_publish_raw(topic_projector, projector_payload, true, "projector");
-    mqtt_publish_raw(topic_alert, alert_payload, true, "alert");
-    mqtt_publish_raw(topic_active, "1", true, "active");
+    if (flags & MQTT_PUBLISH_TEMP) mqtt_publish_raw(topic_temp, temp_payload, true, "temperature");
+    if (flags & MQTT_PUBLISH_CO2) mqtt_publish_raw(topic_co2, co2_payload, true, "co2");
+    if (flags & MQTT_PUBLISH_LUX) mqtt_publish_raw(topic_lux, lux_payload, true, "lux");
+    if (flags & MQTT_PUBLISH_HUMAN) mqtt_publish_raw(topic_human, human_payload, true, "human");
+    if (flags & MQTT_PUBLISH_LED) mqtt_publish_raw(topic_led, led_payload, true, "led");
+    if (flags & MQTT_PUBLISH_AC) mqtt_publish_raw(topic_ac, ac_payload, true, "ac");
+    if (flags & MQTT_PUBLISH_PROJECTOR) mqtt_publish_raw(topic_projector, projector_payload, true, "projector");
+    if (flags & MQTT_PUBLISH_ALERT) mqtt_publish_raw(topic_alert, alert_payload, true, "alert");
+    if (flags & MQTT_PUBLISH_ACTIVE) mqtt_publish_raw(topic_active, "1", true, "active");
 }
 
 void mqtt_publish_state() {
-    mqtt_publish_v2_state();
+    mqtt_publish_v2_state(MQTT_PUBLISH_ALL);
+}
+
+static bool mqtt_parse_2digits(const char* text, uint8_t& value) {
+    if (!isdigit((unsigned char)text[0]) || !isdigit((unsigned char)text[1])) return false;
+    value = (uint8_t)((text[0] - '0') * 10 + (text[1] - '0'));
+    return true;
+}
+
+static bool mqtt_valid_schedule_date(const char* text, uint32_t& date_value) {
+    if (strlen(text) != 8) return false;
+    for (uint8_t i = 0; i < 8; i++) {
+        if (!isdigit((unsigned char)text[i])) return false;
+    }
+
+    uint16_t year = (uint16_t)((text[0] - '0') * 1000 + (text[1] - '0') * 100 +
+                               (text[2] - '0') * 10 + (text[3] - '0'));
+    uint8_t month = (uint8_t)((text[4] - '0') * 10 + (text[5] - '0'));
+    uint8_t day = (uint8_t)((text[6] - '0') * 10 + (text[7] - '0'));
+    static const uint8_t days_in_month[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    if (year < 2024 || month < 1 || month > 12 || day < 1) return false;
+    uint8_t max_day = days_in_month[month - 1];
+    bool leap = ((year % 4 == 0) && (year % 100 != 0)) || (year % 400 == 0);
+    if (month == 2 && leap) max_day = 29;
+    if (day > max_day) return false;
+
+    date_value = (uint32_t)year * 10000UL + (uint32_t)month * 100UL + day;
+    return true;
+}
+
+static bool mqtt_parse_schedule_slot(const char* text, DailyScheduleSlot& slot) {
+    if (strlen(text) != 9 || text[4] != '-') return false;
+    uint8_t sh, sm, eh, em;
+    if (!mqtt_parse_2digits(text, sh) || !mqtt_parse_2digits(text + 2, sm) ||
+        !mqtt_parse_2digits(text + 5, eh) || !mqtt_parse_2digits(text + 7, em)) {
+        return false;
+    }
+    if (sh > 23 || eh > 23 || sm > 59 || em > 59) return false;
+    slot.start_min = (uint16_t)sh * 60U + sm;
+    slot.end_min = (uint16_t)eh * 60U + em;
+    slot.pre_triggered = false;
+    slot.end_triggered = false;
+    return slot.start_min < slot.end_min;
+}
+
+static bool mqtt_apply_daily_schedule(char* payload_str) {
+    DailyScheduleSlot parsed[DAILY_SCHEDULE_MAX_SLOTS] = {};
+    uint8_t parsed_count = 0;
+    uint32_t date_value = 0;
+
+    char* save_ptr = nullptr;
+    char* token = strtok_r(payload_str, ";", &save_ptr);
+    if (!token || !mqtt_valid_schedule_date(token, date_value)) return false;
+
+    uint16_t previous_end = 0;
+    while ((token = strtok_r(nullptr, ";", &save_ptr)) != nullptr) {
+        if (parsed_count >= DAILY_SCHEDULE_MAX_SLOTS ||
+            !mqtt_parse_schedule_slot(token, parsed[parsed_count]) ||
+            (parsed_count > 0 && parsed[parsed_count].start_min < previous_end)) {
+            return false;
+        }
+        previous_end = parsed[parsed_count].end_min;
+        parsed_count++;
+    }
+
+    data_lock(g_state);
+    g_state.sensor.schedule_date_yyyymmdd = date_value;
+    g_state.sensor.schedule_slot_count = parsed_count;
+    memset(g_state.sensor.schedule_slots, 0, sizeof(g_state.sensor.schedule_slots));
+    memcpy(g_state.sensor.schedule_slots, parsed, sizeof(DailyScheduleSlot) * parsed_count);
+    g_state.sensor.sched_shutdown_active = false;
+    g_state.sensor.sched_shutdown_timer_ms = 0;
+    g_state.ui_needs_update = true;
+    data_unlock(g_state);
+    data_save_device_config(g_state);
+
+    Serial.printf("[MQTT] Daily schedule saved date=%lu slots=%u\n",
+                  (unsigned long)date_value, parsed_count);
+    return true;
 }
 
 static void mqtt_callback(char* topic, byte* payload, unsigned int length) {
@@ -685,11 +781,15 @@ static void mqtt_callback(char* topic, byte* payload, unsigned int length) {
     }
 
     if (strcmp(topic, topic_schedule) == 0) {
-        char payload_str[32] = {0};
+        char payload_str[128] = {0};
         size_t len = (length < sizeof(payload_str) - 1) ? length : (sizeof(payload_str) - 1);
         memcpy(payload_str, payload, len);
+        char* start = payload_str;
+        while (*start && isspace((unsigned char)*start)) start++;
+        char* end = start + strlen(start);
+        while (end > start && isspace((unsigned char)end[-1])) *--end = '\0';
 
-        if (strcmp(payload_str, "PRE_CLASS_ON") == 0) {
+        if (strcmp(start, "PRE_CLASS_ON") == 0) {
             Serial.println("[MQTT] Schedule: PRE_CLASS_ON command received");
             data_lock(g_state);
             g_state.sensor.ac_on = true;
@@ -702,7 +802,7 @@ static void mqtt_callback(char* topic, byte* payload, unsigned int length) {
             rs485_request_ac_command(true, g_state.sensor.temp_target, 0, g_state.sensor.ac_fan_speed, g_state.sensor.ac_swing_mode);
             rs485_request_light_command(true);
             mqtt_publish_state();
-        } else if (strcmp(payload_str, "CLASS_ENDED") == 0) {
+        } else if (strcmp(start, "CLASS_ENDED") == 0) {
             Serial.println("[MQTT] Schedule: CLASS_ENDED command received");
             data_lock(g_state);
             g_state.sensor.sched_shutdown_active = true;
@@ -710,6 +810,8 @@ static void mqtt_callback(char* topic, byte* payload, unsigned int length) {
             g_state.ui_needs_update = true;
             data_unlock(g_state);
             mqtt_publish_state();
+        } else if (!mqtt_apply_daily_schedule(start)) {
+            Serial.printf("[MQTT] Invalid daily schedule ignored: %s\n", start);
         }
         return;
     }
@@ -919,11 +1021,80 @@ void mqtt_loop() {
     } else {
         mqtt_set_connected_state(true);
         mqttClient.loop();
-        static uint32_t last_publish = 0;
+        static uint32_t last_runtime_check = 0;
+        static uint32_t last_heartbeat = 0;
+        static uint32_t last_temp_burst_publish = 0;
+        static uint32_t temp_burst_until = 0;
+        static uint32_t lux_publish_due = 0;
+        static bool snapshot_ready = false;
+        static bool last_human_valid = false;
+        static bool last_human = false;
+        static bool last_led = false;
+        static bool last_ac = false;
+        static float last_target = 0.0f;
+        static bool last_projector = false;
         uint32_t now = millis();
-        if (now - last_publish >= mqtt_publish_interval_ms) {
-            last_publish = now;
-            mqtt_publish_state();
+        if (now - last_runtime_check >= MQTT_RUNTIME_CHECK_INTERVAL_MS) {
+            last_runtime_check = now;
+
+            bool human_valid;
+            bool human;
+            bool led;
+            bool ac;
+            float target;
+            bool projector;
+            data_lock(g_state);
+            human_valid = g_state.rs485.dashboard.human_presence_valid;
+            human = g_state.sensor.human_presence;
+            led = g_state.sensor.light_on;
+            ac = g_state.sensor.ac_on;
+            target = g_state.sensor.temp_target;
+            projector = g_state.sensor.projector_on;
+            data_unlock(g_state);
+
+            uint16_t flags = 0;
+            if (!snapshot_ready) {
+                snapshot_ready = true;
+                flags = MQTT_PUBLISH_ALL;
+                last_heartbeat = now;
+            } else {
+                if (human_valid != last_human_valid || human != last_human) flags |= MQTT_PUBLISH_HUMAN;
+                if (led != last_led) {
+                    flags |= MQTT_PUBLISH_LED;
+                    lux_publish_due = now + MQTT_LUX_AFTER_LIGHT_DELAY_MS;
+                }
+                if (ac != last_ac || target != last_target) {
+                    flags |= MQTT_PUBLISH_AC;
+                    if ((!last_ac && ac) || (target > last_target + 0.9f) || (target < last_target - 0.9f)) {
+                        temp_burst_until = now + MQTT_TEMP_BURST_DURATION_MS;
+                        last_temp_burst_publish = 0;
+                    }
+                }
+                if (projector != last_projector) flags |= MQTT_PUBLISH_PROJECTOR;
+            }
+
+            last_human_valid = human_valid;
+            last_human = human;
+            last_led = led;
+            last_ac = ac;
+            last_target = target;
+            last_projector = projector;
+
+            if (lux_publish_due != 0 && (int32_t)(now - lux_publish_due) >= 0) {
+                flags |= MQTT_PUBLISH_LUX;
+                lux_publish_due = 0;
+            }
+            if ((int32_t)(temp_burst_until - now) > 0 &&
+                (last_temp_burst_publish == 0 || now - last_temp_burst_publish >= MQTT_TEMP_BURST_INTERVAL_MS)) {
+                flags |= MQTT_PUBLISH_TEMP;
+                last_temp_burst_publish = now;
+            }
+            if (now - last_heartbeat >= MQTT_HEARTBEAT_INTERVAL_MS) {
+                flags |= MQTT_PUBLISH_ALL;
+                last_heartbeat = now;
+            }
+
+            mqtt_publish_v2_state(flags);
         }
     }
 }

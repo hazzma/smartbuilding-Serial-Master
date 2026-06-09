@@ -221,6 +221,8 @@ struct DashboardUiModel {
     uint8_t ac_swing_mode;
     bool projector_on;
     bool led_on;
+    bool led_channel_on[2];
+    uint8_t led_channel_count;
     bool ac_mirrors;
     DashboardLayoutMode layout;
     uint8_t proj_verif_state;
@@ -283,12 +285,50 @@ static DashboardUiModel dashboard_make_ui_model(const BuildingState& state) {
     model.ac_swing_mode = state.sensor.ac_swing_mode;
     model.projector_on = state.sensor.projector_on;
     model.led_on = state.sensor.light_on;
+    uint8_t slave_count = state.rs485.slave_count;
+    if (slave_count > RS485_MAX_SLAVES) slave_count = RS485_MAX_SLAVES;
+    for (uint8_t i = 0; i < slave_count; i++) {
+        const RS485SlaveState& slave = state.rs485.slaves[i];
+        if (!slave.online || !(slave.enabled_mask & RS485_CAP_LIGHT_RELAY)) continue;
+        model.led_channel_count = slave.relay_count == 0 ? 1 : slave.relay_count;
+        if (model.led_channel_count > 2) model.led_channel_count = 2;
+        for (uint8_t channel = 0; channel < model.led_channel_count; channel++) {
+            model.led_channel_on[channel] = slave.relay_state[channel] != 0;
+        }
+        break;
+    }
     model.ac_mirrors = rs485_has_ir_combo_node(state.rs485);
     model.layout = dashboard_choose_layout(model.has_temp, model.has_ac,
                                            model.has_projector, model.has_led);
     model.proj_verif_state = state.sensor.proj_verif_state;
     model.proj_hw_fail = state.sensor.proj_hardware_failed;
     return model;
+}
+
+static bool dashboard_is_full_control_layout(const DashboardUiModel& model) {
+    return model.has_temp && model.has_ac && model.has_projector && model.has_led;
+}
+
+static void dashboard_draw_transparent_temp(float temp) {
+    char value[20];
+    snprintf(value, sizeof(value), "%.1f C", temp);
+    p_canvas->setTextDatum(TextDatum::MiddleCenter);
+    p_canvas->setTextFont(4);
+    p_canvas->setTextColor(COLOR_TEXT_MAIN);
+    p_canvas->drawString(value, 240, 64);
+    p_canvas->setTextDatum(TextDatum::TopLeft);
+}
+
+static void dashboard_draw_led_widget(int x, int y, int w, int h, const DashboardUiModel& model) {
+    if (model.led_channel_count > 1) {
+        int gap = 8;
+        int channel_w = (w - gap) / 2;
+        drawLargeControlButton(x, y, channel_w, h, "LED 1", model.led_channel_on[0]);
+        drawLargeControlButton(x + channel_w + gap, y, w - channel_w - gap, h,
+                               "LED 2", model.led_channel_on[1]);
+    } else {
+        drawLargeControlButton(x, y, w, h, "LED 1", model.led_channel_on[0]);
+    }
 }
 
 static void dashboard_draw_ac_widget(int x, int y, int w, int h, const DashboardUiModel& model) {
@@ -496,7 +536,12 @@ void render_dashboard(BuildingState& state, int fps) {
             break;
 
         case DASH_LAYOUT_TEMP_COMPACT_WITH_CONTROLS: {
-            if (model.has_ac && !model.has_projector && !model.has_led) {
+            if (dashboard_is_full_control_layout(model)) {
+                dashboard_draw_transparent_temp(model.avg_temp);
+                dashboard_draw_ac_widget(18, 88, 224, 210, model);
+                drawLargeControlButton(258, 88, 204, 94, "Projector", model.projector_on, proj_sub);
+                dashboard_draw_led_widget(258, 194, 204, 104, model);
+            } else if (model.has_ac && !model.has_projector && !model.has_led) {
                 drawLargeTempWidget(24, 104, 204, 124, model.avg_temp, true, false);
                 dashboard_draw_ac_widget(252, 104, 204, 124, model);
             } else if (model.has_ac && model.has_projector && !model.has_led) {
@@ -513,11 +558,11 @@ void render_dashboard(BuildingState& state, int fps) {
 
                 if (model.has_projector && model.has_led) {
                     drawLargeControlButton(24, 190, 204, 104, "Projector", model.projector_on, proj_sub);
-                    drawLargeControlButton(252, 190, 204, 104, "LED", model.led_on);
+                    dashboard_draw_led_widget(252, 190, 204, 104, model);
                 } else if (model.has_projector) {
                     drawLargeControlButton(88, 190, 304, 104, "Projector", model.projector_on, proj_sub);
                 } else if (model.has_led) {
-                    drawLargeControlButton(88, 190, 304, 104, "LED", model.led_on);
+                    dashboard_draw_led_widget(88, 190, 304, 104, model);
                 }
             }
 
@@ -537,7 +582,7 @@ void render_dashboard(BuildingState& state, int fps) {
             } else if (model.has_projector) {
                 drawLargeControlButton(72, 92, 336, 144, "Projector", model.projector_on, proj_sub);
             } else if (model.has_led) {
-                drawLargeControlButton(72, 92, 336, 144, "LED", model.led_on);
+                dashboard_draw_led_widget(72, 92, 336, 144, model);
             }
             break;
 
@@ -551,11 +596,11 @@ void render_dashboard(BuildingState& state, int fps) {
                     drawLargeControlButton(250, 76, 206, 74, "Projector", model.projector_on, proj_sub);
                 }
                 if (model.has_led) {
-                    drawLargeControlButton(250, 158, 206, 74, "LED", model.led_on);
+                    dashboard_draw_led_widget(250, 158, 206, 74, model);
                 }
             } else {
                 drawLargeControlButton(24, 92, 204, 144, "Projector", model.projector_on, proj_sub);
-                drawLargeControlButton(252, 92, 204, 144, "LED", model.led_on);
+                dashboard_draw_led_widget(252, 92, 204, 144, model);
             }
             break;
     }
@@ -2366,7 +2411,9 @@ void handle_dashboard_touch(BuildingState& state, int tx, int ty) {
     if (model.layout == DASH_LAYOUT_TEMP_CENTER_LARGE) {
         temp_rect = {40, 78, 400, 174};
     } else if (model.layout == DASH_LAYOUT_TEMP_COMPACT_WITH_CONTROLS) {
-        if (model.has_ac && !model.has_projector && !model.has_led) {
+        if (dashboard_is_full_control_layout(model)) {
+            temp_rect = {190, 48, 100, 34};
+        } else if (model.has_ac && !model.has_projector && !model.has_led) {
             temp_rect = {24, 104, 204, 124};
         } else if (model.has_ac && model.has_projector && !model.has_led) {
             temp_rect = {252, 214, 216, 84};
@@ -2384,10 +2431,21 @@ void handle_dashboard_touch(BuildingState& state, int tx, int ty) {
     UiRect ac_rect = {0, 0, 0, 0};
     UiRect projector_rect = {0, 0, 0, 0};
     UiRect led_rect = {0, 0, 0, 0};
+    UiRect led1_rect = {0, 0, 0, 0};
+    UiRect led2_rect = {0, 0, 0, 0};
 
     switch (model.layout) {
         case DASH_LAYOUT_TEMP_COMPACT_WITH_CONTROLS:
-            if (model.has_ac && !model.has_projector && !model.has_led) {
+            if (dashboard_is_full_control_layout(model)) {
+                ac_rect = {18, 88, 224, 210};
+                projector_rect = {258, 88, 204, 94};
+                if (model.led_channel_count > 1) {
+                    led1_rect = {258, 194, 98, 104};
+                    led2_rect = {364, 194, 98, 104};
+                } else {
+                    led1_rect = {258, 194, 204, 104};
+                }
+            } else if (model.has_ac && !model.has_projector && !model.has_led) {
                 ac_rect = {252, 104, 204, 124};
             } else if (model.has_ac && model.has_projector && !model.has_led) {
                 ac_rect = {18, 64, 216, 234};
@@ -2429,6 +2487,15 @@ void handle_dashboard_touch(BuildingState& state, int tx, int ty) {
 
         default:
             break;
+    }
+
+    if (led_rect.w > 0 && model.led_channel_count > 1) {
+        int gap = 8;
+        int channel_w = (led_rect.w - gap) / 2;
+        led1_rect = {led_rect.x, led_rect.y, channel_w, led_rect.h};
+        led2_rect = {led_rect.x + channel_w + gap, led_rect.y,
+                     led_rect.w - channel_w - gap, led_rect.h};
+        led_rect = {0, 0, 0, 0};
     }
 
     if (ac_rect.w > 0) {
@@ -2540,6 +2607,16 @@ void handle_dashboard_touch(BuildingState& state, int tx, int ty) {
         state.ui_needs_update = true;
         data_unlock(state);
         rs485_request_light_command(light_power);
+        return;
+    }
+
+    if (led1_rect.w > 0 && hit_rect(tx, ty, led1_rect)) {
+        rs485_request_light_channel_command(1, !model.led_channel_on[0]);
+        return;
+    }
+
+    if (led2_rect.w > 0 && hit_rect(tx, ty, led2_rect)) {
+        rs485_request_light_channel_command(2, !model.led_channel_on[1]);
         return;
     }
 }

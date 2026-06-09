@@ -246,8 +246,8 @@ unstable later in the day.
 
 Implementation checkpoint:
 - `PRE_CLASS_ON` and `CLASS_ENDED` are implemented.
-- Daily payload parsing, persistence, and automatic local slot execution are
-  planned for V2.8 and are not implemented yet.
+- Daily payload parsing, persistence, overwrite, catch-up, and automatic local
+  slot execution are implemented in V2.8.
 - Recommended sensor polling and MQTT publish timing is documented in
   `docs/V2.8_Planning.md`.
 
@@ -258,6 +258,12 @@ Command flow:
 4. Target slave applies command and reports command status/result.
 5. Master republishes the updated actuator state to the matching `data` topic.
 6. Server/Flutter updates UI from the republished state/result.
+
+Lamp control rule:
+- Flutter SHALL show one aggregate Lamp control only.
+- Flutter SHALL NOT expose separate LED 1 and LED 2 controls.
+- A scalar command on `HD01/control/led` controls Relay 1 and Relay 2 together.
+- Per-relay LED 1/LED 2 control is reserved for the local master touchscreen.
 
 IR command status rule:
 - AC and Projector command status SHALL be displayed as command-result status only, such as pending, success, busy, or failed.

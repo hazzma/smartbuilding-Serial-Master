@@ -10,6 +10,14 @@
 #define DASHBOARD_TEMP_SLOTS 4
 #define DASHBOARD_LOGICAL_SLOT_COUNT 9
 #define RS485_DUMMY_UI_UID 0xD00D0001UL
+#define DAILY_SCHEDULE_MAX_SLOTS 8
+
+struct DailyScheduleSlot {
+    uint16_t start_min;
+    uint16_t end_min;
+    bool     pre_triggered;
+    bool     end_triggered;
+};
 
 enum CapabilityBit : uint16_t {
     CAP_TEMP           = (1 << 0),
@@ -162,6 +170,7 @@ struct RS485State {
     bool test_ok;
     bool light_command_requested;
     bool light_command_on;
+    uint8_t light_command_channel;
     bool ac_command_requested;
     bool ac_command_power;
     float ac_command_target_c;
@@ -216,6 +225,9 @@ struct SensorData {
     // Scheduler fields
     bool     sched_shutdown_active;
     uint32_t sched_shutdown_timer_ms;
+    uint32_t schedule_date_yyyymmdd;
+    uint8_t  schedule_slot_count;
+    DailyScheduleSlot schedule_slots[DAILY_SCHEDULE_MAX_SLOTS];
 
     // Rolling light history fields
     uint32_t light_on_start_ms;

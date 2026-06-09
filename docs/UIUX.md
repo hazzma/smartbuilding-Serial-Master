@@ -465,14 +465,22 @@ AND
 
 Then temperature widget SHALL shrink slightly and move into the adaptive widget grid.
 
-When AVG temperature, AC, Projector, and LED are all visible, the dashboard SHOULD use a visually symmetric 2x2 widget grid:
+When AVG temperature, AC, Projector, and LED are all visible, the implemented
+V2.8 layout prioritizes the complete AC control surface:
 
 ```text
-AVG Temperature    AC Target
-Projector          LED
+          AVG Temperature (transparent, tap for detail)
+AC control, tall   Projector
+AC Swing / Fan     LED 1 | LED 2
 ```
 
-The four primary cards SHOULD share matching width and similar height so no control appears visually secondary.
+Rules:
+- Average temperature remains clickable but SHALL not consume a full opaque
+  card in this dense layout.
+- AC remains tall on the left and keeps power, target, UP/DOWN, Swing, and Fan.
+- Projector is placed on the upper-right.
+- LED 1 and LED 2 are placed side-by-side on the lower-right when two relay
+  channels are available.
 
 Special layout for Temperature + AC + Projector without LED:
 
@@ -682,6 +690,17 @@ If 2-4 lamp channels are available, the main dashboard widget SHALL make channel
 - compact 2x2 mini-toggle grid when there is enough space
 
 The UI SHALL NOT silently toggle all lamps when the user expected one selected channel.
+
+Current V2.8 implementation:
+- A relay slave with two channels renders separate `LED 1` and `LED 2` buttons.
+- `LED 1` writes Relay 1 register `0x010D`.
+- `LED 2` writes Relay 2 register `0x010E`.
+- Each button displays the state read back from its own relay register.
+- Individual channel controls exist only on the local master touchscreen.
+- The mobile app SHALL expose one aggregate Lamp control, not separate LED 1
+  and LED 2 controls.
+- Every mobile app/server `control/led` MQTT command and schedule action SHALL
+  control Relay 1 and Relay 2 together.
 
 Default placement logic:
 

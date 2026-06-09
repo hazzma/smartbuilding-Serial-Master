@@ -36,15 +36,70 @@ Implementation effect:
 - After an actuator command is confirmed by the target slave, the master republishes the related state topic so the app can synchronize.
 - Slave selection follows the v2.1 Device Profile model.
 
+## MQTT Alert Bitmask
+
+The master publishes one retained decimal integer to:
+
+```text
+HD01/data/alert
+```
+
+The integer is a bitmask. Add the active bit values together when more than one
+condition exists.
+
+| Bit | Decimal value | Meaning |
+|---:|---:|---|
+| 0 | 1 | No valid temperature source. |
+| 1 | 2 | CO2 source invalid or unavailable. |
+| 2 | 4 | Room Lux source invalid or unavailable. |
+| 3 | 8 | Human-presence source invalid or unavailable. |
+| 4 | 16 | RS485/bus problem affecting an available light relay. |
+| 5 | 32 | Projector verification/hardware warning or projector bus problem. |
+| 6 | 64 | RS485/bus problem affecting the available AC control. |
+| 7 | 128 | After-hours empty-room active-load anomaly. |
+
+Example:
+
+```text
+alert = 137
+137 = 128 + 8 + 1
+```
+
+This means active-load anomaly, invalid presence, and invalid temperature are
+active together. The server is responsible for decoding the decimal bitmask
+before presenting human-readable warnings to the mobile app.
+
+## Lamp Control And Planned Verification
+
+- The local master touchscreen exposes `LED 1` and `LED 2` separately.
+- `LED 1` controls Relay 1 at `0x010D`; `LED 2` controls Relay 2 at `0x010E`.
+- The mobile app/server exposes only one aggregate Lamp control.
+- Every `HD01/control/led` command and schedule action controls Relay 1 and
+  Relay 2 together.
+- MQTT `HD01/data/led` remains an aggregate state: `1` means at least one lamp
+  relay is ON; `0` means all lamp relays are OFF.
+
+Lux-based lamp verification is intentionally not active yet. A future checker
+must not report lamp failure merely because sunlight changes, clouds pass, or
+only one lamp zone is intentionally ON. Verification must map each relay to its
+own Lux zone and use a persistent `INCONCLUSIVE` state before raising a warning.
+
 ## Patch Notes
 
-### V2.8 Planning
+### V2.8 Local Schedule and MQTT Timing
 
-- Defines recommended RS485 polling and MQTT publish intervals, including temperature burst mode after AC ON, delayed Lux updates after lamp changes, event-driven state publishing, and 5-minute heartbeats.
+- Keeps fast RS485 sensor-block polling while MQTT uses event-driven updates and 5-minute heartbeats.
+- Publishes temperature every 5 seconds for 5 minutes after AC ON or a target change of at least 1 C.
+- Publishes Lux 5 seconds after the lamp state changes, then returns to the 5-minute heartbeat.
+- Splits only the local master touchscreen light control into `LED 1` and
+  `LED 2`. The mobile app/server keeps one aggregate Lamp control; every
+  `control/led` MQTT command and schedule action controls both configured light
+  relays together.
+- Records the next lamp-verification design without enabling it yet: window/weather changes and one-zone-only lighting must not become false lamp warnings.
 - Plans logical separation between room Lux, projector-verification Lux, and Lux outlier detection while keeping the existing 5-7 day active-load anomaly.
 - Keeps master authority over lamp commands while a room is confirmed occupied.
-- Plans the local daily schedule engine. Current firmware already handles `PRE_CLASS_ON` and `CLASS_ENDED`, but daily `YYYYMMDD;HHMM-HHMM;...` parsing, persistence, and automatic local slot execution are not implemented yet.
-- Full planning details: `docs/V2.8_Planning.md`.
+- Implements the local daily schedule engine: validates and stores `YYYYMMDD;HHMM-HHMM;...`, overwrites the previous schedule, triggers pre-class actions 20 minutes early, starts smart shutdown at class end, and catches up after reboot.
+- Full implementation status and remaining Lux work: `docs/V2.8_Planning.md`.
 
 ### V2.7.1
 

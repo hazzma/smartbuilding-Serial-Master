@@ -203,6 +203,9 @@ void Task_Net(void* pvParameters) {
             bool save_needed = false;
             bool trigger_rs485_ac_off = false;
             bool trigger_rs485_light_off = false;
+            bool trigger_schedule_ac_on = false;
+            bool trigger_schedule_light_on = false;
+            bool trigger_schedule_publish = false;
             float target_temp = 23.0f;
             uint8_t fan_speed = 0;
             uint8_t swing_mode = 0;
@@ -243,6 +246,58 @@ void Task_Net(void* pvParameters) {
             // NTP time checks & Midnight Rollover
             struct tm timeinfo;
             if (getLocalTime(&timeinfo, 5)) {
+                uint32_t today = (uint32_t)(timeinfo.tm_year + 1900) * 10000UL +
+                                 (uint32_t)(timeinfo.tm_mon + 1) * 100UL +
+                                 (uint32_t)timeinfo.tm_mday;
+                uint16_t minute_now = (uint16_t)timeinfo.tm_hour * 60U + (uint16_t)timeinfo.tm_min;
+
+                if (g_state.sensor.schedule_date_yyyymmdd == today) {
+                    uint8_t slot_count = g_state.sensor.schedule_slot_count;
+                    if (slot_count > DAILY_SCHEDULE_MAX_SLOTS) slot_count = DAILY_SCHEDULE_MAX_SLOTS;
+                    bool schedule_window_active = false;
+                    for (uint8_t i = 0; i < slot_count; i++) {
+                        const DailyScheduleSlot& slot = g_state.sensor.schedule_slots[i];
+                        uint16_t pre_min = slot.start_min >= 20 ? slot.start_min - 20 : 0;
+                        if (minute_now >= pre_min && minute_now < slot.end_min) {
+                            schedule_window_active = true;
+                        }
+                    }
+
+                    for (uint8_t i = 0; i < slot_count; i++) {
+                        DailyScheduleSlot& slot = g_state.sensor.schedule_slots[i];
+                        uint16_t pre_min = slot.start_min >= 20 ? slot.start_min - 20 : 0;
+                        if (!slot.pre_triggered && minute_now >= pre_min && minute_now < slot.end_min) {
+                            slot.pre_triggered = true;
+                            g_state.sensor.ac_on = true;
+                            g_state.sensor.light_on = true;
+                            g_state.sensor.sched_shutdown_active = false;
+                            g_state.sensor.sched_shutdown_timer_ms = 0;
+                            g_state.ui_needs_update = true;
+                            trigger_schedule_ac_on = true;
+                            trigger_schedule_light_on = true;
+                            trigger_schedule_publish = true;
+                            target_temp = g_state.sensor.temp_target;
+                            fan_speed = g_state.sensor.ac_fan_speed;
+                            swing_mode = g_state.sensor.ac_swing_mode;
+                            Serial.printf("[Schedule] Slot %u pre-class/catch-up trigger\n", i + 1);
+                        }
+
+                        if (!slot.end_triggered && minute_now >= slot.end_min) {
+                            slot.pre_triggered = true;
+                            slot.end_triggered = true;
+                            g_state.ui_needs_update = true;
+                            if (!schedule_window_active) {
+                                g_state.sensor.sched_shutdown_active = true;
+                                g_state.sensor.sched_shutdown_timer_ms = millis() + (20UL * 60UL * 1000UL);
+                                trigger_schedule_publish = true;
+                                Serial.printf("[Schedule] Slot %u ended; shutdown check in 20 minutes\n", i + 1);
+                            } else {
+                                Serial.printf("[Schedule] Slot %u ended; next class window already active\n", i + 1);
+                            }
+                        }
+                    }
+                }
+
                 // Dynamic active-load anomaly detection (needs enough history and reliable occupancy)
                 bool presence_valid = g_state.rs485.dashboard.human_presence_valid;
                 bool confirmed_empty = presence_valid && !g_state.sensor.human_presence;
@@ -303,7 +358,13 @@ void Task_Net(void* pvParameters) {
             if (trigger_rs485_light_off) {
                 rs485_request_light_command(false);
             }
-            if (trigger_rs485_ac_off || trigger_rs485_light_off || save_needed) {
+            if (trigger_schedule_ac_on) {
+                rs485_request_ac_command(true, target_temp, 0, fan_speed, swing_mode);
+            }
+            if (trigger_schedule_light_on) {
+                rs485_request_light_command(true);
+            }
+            if (trigger_rs485_ac_off || trigger_rs485_light_off || trigger_schedule_publish || save_needed) {
                 if (save_needed) {
                     data_save_device_config(g_state);
                 }

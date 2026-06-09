@@ -949,7 +949,7 @@ static bool rs485_find_enabled_slave(uint16_t capability, RS485SlaveState& out) 
     return found;
 }
 
-static bool rs485_write_light_command(bool on) {
+static bool rs485_write_light_command(uint8_t channel, bool on) {
     RS485SlaveState slave = {};
     if (!rs485_find_enabled_slave(RS485_CAP_LIGHT_RELAY, slave)) {
         data_lock(g_state);
@@ -960,12 +960,28 @@ static bool rs485_write_light_command(bool on) {
         return false;
     }
 
+    uint8_t quantity = slave.relay_count == 0 ? 1 : slave.relay_count;
+    if (quantity > 2) quantity = 2;
+    if (channel > quantity) {
+        data_lock(g_state);
+        snprintf(g_state.rs485.status, sizeof(g_state.rs485.status),
+                 "Relay channel %u unavailable", channel);
+        g_state.ui_needs_update = true;
+        data_unlock(g_state);
+        return false;
+    }
+
+    if (channel >= 1 && channel <= 2) {
+        uint16_t reg = channel == 1 ? RS485_MODBUS_REG_RELAY_1 : RS485_MODBUS_REG_RELAY_2;
+        bool ok = rs485_write_holding_register(slave.address, reg, on ? 1 : 0, "LIGHT_CHANNEL_COMMAND");
+        if (ok) rs485_poll_sensor_registers(slave.address);
+        return ok;
+    }
+
     uint16_t relays[2] = {
         static_cast<uint16_t>(on ? 1 : 0),
         static_cast<uint16_t>(on ? 1 : 0)
     };
-    uint8_t quantity = slave.relay_count == 0 ? 1 : slave.relay_count;
-    if (quantity > 2) quantity = 2;
 
     bool ok = quantity > 1
                   ? rs485_write_holding_registers(slave.address, RS485_MODBUS_REG_RELAY_1,
@@ -1713,11 +1729,22 @@ void rs485_request_test(uint8_t address, uint8_t cmd, bool write_command) {
 }
 
 void rs485_request_light_command(bool on) {
+    rs485_request_light_channel_command(0, on);
+}
+
+void rs485_request_light_channel_command(uint8_t channel, bool on) {
+    if (channel > 2) return;
     data_lock(g_state);
     g_state.rs485.light_command_requested = true;
     g_state.rs485.light_command_on = on;
-    strncpy(g_state.rs485.status, on ? "Queued light ON" : "Queued light OFF",
-            sizeof(g_state.rs485.status) - 1);
+    g_state.rs485.light_command_channel = channel;
+    if (channel == 0) {
+        strncpy(g_state.rs485.status, on ? "Queued all lights ON" : "Queued all lights OFF",
+                sizeof(g_state.rs485.status) - 1);
+    } else {
+        snprintf(g_state.rs485.status, sizeof(g_state.rs485.status),
+                 "Queued LED %u %s", channel, on ? "ON" : "OFF");
+    }
     g_state.rs485.status[sizeof(g_state.rs485.status) - 1] = '\0';
     g_state.ui_needs_update = true;
     data_unlock(g_state);
@@ -2429,6 +2456,7 @@ static void rs485_handle_ui_test_request() {
 static void rs485_handle_control_commands() {
     bool light_requested = false;
     bool light_on = false;
+    uint8_t light_channel = 0;
     bool ac_requested = false;
     bool ac_power = false;
     float ac_target_c = 0.0f;
@@ -2443,6 +2471,7 @@ static void rs485_handle_control_commands() {
     if (!g_state.rs485.pairing_active) {
         light_requested = g_state.rs485.light_command_requested;
         light_on = g_state.rs485.light_command_on;
+        light_channel = g_state.rs485.light_command_channel;
         ac_requested = g_state.rs485.ac_command_requested;
         ac_power = g_state.rs485.ac_command_power;
         ac_target_c = g_state.rs485.ac_command_target_c;
@@ -2454,13 +2483,14 @@ static void rs485_handle_control_commands() {
         projector_input = g_state.rs485.projector_command_input;
 
         g_state.rs485.light_command_requested = false;
+        g_state.rs485.light_command_channel = 0;
         g_state.rs485.ac_command_requested = false;
         g_state.rs485.projector_command_requested = false;
     }
     data_unlock(g_state);
 
     if (light_requested) {
-        bool ok = rs485_write_light_command(light_on);
+        bool ok = rs485_write_light_command(light_channel, light_on);
         data_lock(g_state);
         snprintf(g_state.rs485.status, sizeof(g_state.rs485.status),
                  ok ? "Light command confirmed" : "Light command failed");

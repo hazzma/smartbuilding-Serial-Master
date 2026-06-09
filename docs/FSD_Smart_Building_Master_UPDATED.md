@@ -38,11 +38,12 @@ Sistem dirancang modular, dengan pemisahan tanggung jawab yang ketat antar modul
 
 Firmware V2 updates the system contract around three simple ideas: saved-slave reconnect on startup, per-sensor MQTT topics, and master-owned device profile assignment.
 
-V2.8 planning note: recommended polling/publish timing, room-vs-projector Lux
-classification, Lux outlier detection, and the planned local daily schedule
-engine are documented in `docs/V2.8_Planning.md`. At the current implementation
-checkpoint, `PRE_CLASS_ON` and `CLASS_ENDED` work, but daily schedule parsing and
-automatic local slot execution are not yet implemented.
+V2.8 implementation note: event-driven MQTT publish timing and the local daily
+schedule engine are documented in `docs/V2.8_Planning.md`. `PRE_CLASS_ON`,
+`CLASS_ENDED`, daily schedule parsing, NVS persistence, overwrite, catch-up, and
+local execution work. Room-vs-projector Lux classification and Lux outlier
+detection remain planned because they require an explicit channel assignment
+model.
 
 What changed:
 - Startup SHALL check saved slave configuration first. If saved slave data exists, the master SHALL try to reconnect those slaves. If no saved slave data exists, the master SHALL do nothing until the user starts discovery.
@@ -1972,6 +1973,13 @@ Top dashboard status area SHALL be transparent over wallpaper. CO2, WiFi, LAN, a
 Projector and LED control buttons SHALL use large touch-friendly dimensions and SHOULD visually match the scale of other primary dashboard widgets. They SHALL NOT render as noticeably small secondary buttons when they are active dashboard controls.
 
 Light/LED dashboard control SHALL support up to 4 controllable lamp channels. If more than one lamp channel is available, the dashboard SHALL provide a compact channel selector or expanded lamp detail surface so the user can choose which lamp to toggle. The main dashboard MAY show an aggregate light widget, but the control interaction SHALL make channel 1-4 selection explicit before changing a specific lamp.
+
+Current V2.8 dashboard behavior exposes Relay 1 and Relay 2 directly as
+separate `LED 1` and `LED 2` buttons. These buttons write `0x010D` and `0x010E`
+independently and render the polled relay state. Individual relay controls SHALL
+only exist on the local master touchscreen. The mobile app/server SHALL expose
+one aggregate Lamp control, and every MQTT `control/led` or schedule light
+command SHALL control all enabled relay channels together.
 
 Empty/status layout:
 

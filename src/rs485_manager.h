@@ -160,6 +160,7 @@ void rs485_set_poll_enabled(bool enabled);
 void rs485_request_test(uint8_t address, uint8_t cmd, bool write_command);
 bool rs485_apply_slave_assignments(uint8_t slave_index);
 void rs485_request_light_command(bool on);
+void rs485_request_light_channel_command(uint8_t channel, bool on);
 void rs485_request_ac_command(bool power, float target_c, uint8_t mode = 0, uint8_t fan_speed = 0, uint8_t swing_mode = 0);
 void rs485_request_projector_command(bool power, uint8_t input = 0);
 
